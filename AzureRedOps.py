@@ -27,29 +27,18 @@ VERSION = "0.1"
 
 
 class AzureRedOps:
-    """Encapsulates all Azure RedOps configuration, state and activities.
-
-    Values that never change at runtime are kept as class-level constants.
-    Values that used to be mutable global variables (and are typically driven
-    by command line arguments) are stored as instance attributes set up in
-    ``__init__`` so the behaviour matches the original script exactly.
-    """
-
-    # --- Immutable configuration (former module-level constants) ---
     VERSION = VERSION
     WHITESPACE_LENGTH = 16
     CREDS_FILE_PATH = ".azure_creds"
     DELAY_REQUEST = 15
     DATE_STANDARD = "%d-%m-%Y %H:%M:%S"
     DATE_ZULU = "%Y-%m-%dT%H:%M:%SZ"
-    # "https://graph.windows.net"
     DEFAULT_AUDIENCE = "https://graph.microsoft.com"
     DEFAULT_SCOPE = "openid offline_access"
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
     DEFAULT_ENDPOINT = "microsoftonline.com"
 
     def __init__(self):
-        # --- Mutable state (former global variables) ---
         self.filters = []
         self.autosave = False
         self.autosave_username = ""
@@ -64,10 +53,6 @@ class AzureRedOps:
         self.builtin_print = None
         self.additional_headers = {}
         self.microsoft_endpoint = self.DEFAULT_ENDPOINT
-
-    # ------------------------------------------------------------------
-    # Static helpers (stateless utilities)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def extract_guid(data):
@@ -113,10 +98,6 @@ class AzureRedOps:
         headers["Authorization"] = f"Bearer {token}"
         headers["Content-Type"] = "application/json"
         return headers
-
-    # ------------------------------------------------------------------
-    # Output / formatting helpers
-    # ------------------------------------------------------------------
 
     def redirect_to_file(self):
         if self.builtin_print is None:
@@ -251,10 +232,6 @@ class AzureRedOps:
             print(f"{self.w('Error')}{str(e)}")
             exit()
 
-    # ------------------------------------------------------------------
-    # Token store activities
-    # ------------------------------------------------------------------
-
     def save_azure_token_to_file(self, token, refresh_token, tenant, name):
         data = {}
         try:
@@ -329,10 +306,6 @@ class AzureRedOps:
 
         with open(self.CREDS_FILE_PATH, "w") as f:
             json.dump(data, f, indent=4)
-
-    # ------------------------------------------------------------------
-    # Tenant discovery and authentication activities
-    # ------------------------------------------------------------------
 
     def get_azure_tenant_id(self, tenant):
         response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/v2.0/.well-known/openid-configuration", verb="GET")
@@ -513,12 +486,8 @@ class AzureRedOps:
             else:
                 return response
 
-    # ------------------------------------------------------------------
-    # Password spraying activities
-    # ------------------------------------------------------------------
 
     def graph_spray(self, username, password, tenant, filepath = "includes/auth_apps.json"):
-        # https://raw.githubusercontent.com/merill/microsoft-info/main/_info/MicrosoftApps.json
         apps = None
         if filepath == None:
             filepath = "includes/auth_apps.json"
@@ -595,10 +564,6 @@ class AzureRedOps:
             print(f"{self.w('Failed')}{appname} ({guid}) failed.")
             print(f"{self.w('Failed')}{response['error']}")
 
-    # ------------------------------------------------------------------
-    # Intelligence and discovery activities
-    # ------------------------------------------------------------------
-
     def get_known_ids(self):
         data = None
         with open("includes/apps.json", "r") as f:
@@ -630,10 +595,6 @@ class AzureRedOps:
                             print(app.get(item))
                     else:
                         self.print_data(app, 48)
-
-    # ------------------------------------------------------------------
-    # Microsoft Graph activities
-    # ------------------------------------------------------------------
 
     def graph_self(self, token):
         headers = {}
@@ -739,8 +700,6 @@ class AzureRedOps:
                 self.print_data(item)
 
     def graph_gather_all(self, token, filename):
-        # https://graph.microsoft.com/beta/users return more information to be added
-        # beta authorizationPolicy endpoint return useful permission such as creating apps or UsersPermissionToReadOtherUsersEnabled
         endpoints = ["https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy","organization", "policies/authorizationPolicy", "policies/featureRolloutPolicies", "policies/conditionalAccessPolicies", "users","groups","applications","oauth2PermissionGrants","servicePrincipals","directoryRoles"]
         for endpoint in endpoints:
             current_filename = None
@@ -1186,7 +1145,6 @@ def main():
 
     else:
         print(f"{app.w('Error')}Invalid activity provided.")
-
 
 if __name__ == "__main__":
     main()
