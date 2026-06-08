@@ -20,6 +20,8 @@ Every operation is selected with `-a/--activity`. Tokens obtained during
 authentication can be cached locally (`.azure_creds`) and reused by name with
 `-l/--load-access-token`, so you rarely have to paste raw JWTs.
 
+Learn more about the tool [on CYPFER blog](https://offsec.cypfer.com/blog/AzureRedOps-Azure-red-team)
+
 ### Features
 
 - **Token management** — save, list, decode/view, and delete access/refresh tokens in a local credential store (`.azure_creds`). Any flow can persist its tokens automatically with `-s/--save` + `-n/--name`.
