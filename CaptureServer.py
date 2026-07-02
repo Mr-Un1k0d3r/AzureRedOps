@@ -85,7 +85,7 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_response(HTTPStatus.OK)
         self.end_headers()
-        self.wfile.write(b'<script>document.location="' + self.redirect_final + '";</script>')
+        self.wfile.write(self.server.webserver.generate_final_url())
 
         print(f"{w('Success')}Token received")
 
@@ -116,6 +116,10 @@ class WebServer:
             self.redirect_url = f"https://{self.redirect_host}:{self.port}/{self.redirect_endpoint}"
             
         print(f"URL to use: {self.generate_url()}")
+        
+    def generate_final_url(self):
+        s = f'<script>document.location="{self.redirect_final}";</script>'
+        return bytearray(s, "utf-8")
 
     def generate_url(self):
         verifier, challenge = self.generate_pkce_pair()
