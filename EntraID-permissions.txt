@@ -1,0 +1,52 @@
+# SharePoint Sites
+Sites.Read.All             = "205e70e5-aba6-4c52-a976-6d2d46c48043"
+Sites.ReadWrite.All        = "89fe6a52-be36-487e-b7d8-d061c450a026"
+Sites.Manage.All           = "0c0bf378-bf22-4481-8f81-9e89a9b4960a"
+Sites.FullControl.All      = "5a54b8b3-347c-476d-8f8e-42d5c7424d29"
+
+# User
+User.Read                  = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
+User.Read.All              = "a154be20-db9c-4678-8ab7-66f6cc099a59"
+
+# Email
+Mail.Read                  = "570282fd-fa5c-430d-a7fd-fc8dc98a9dca"
+Mail.Send                  = "e383f46e-2787-4529-855e-0e479a3ffac0"
+Mail.ReadWrite             = "024d486e-b451-40bb-833d-3e66d98c5c73"
+
+# Files / OneDrive / SharePoint
+Files.Read                 = "10465720-29dd-4523-a11a-6a75c743c9d9"
+Files.ReadWrite            = "863451e7-0667-486c-a5d6-d135439485f0"
+Files.Read.All             = "01d4889c-1287-42c6-ac1f-5d1e02578ef6"
+Files.ReadWrite.All        = "75359482-378d-4052-8f01-80520e7db3cd"
+
+# Directory
+Directory.Read.All         = "06da0dbc-49e2-44d2-8312-53f166ab848a"
+Directory.ReadWrite.All    = "19dbc75e-c2e2-444c-a770-ec69d8559fc7"
+
+# Groups
+Group.Read.All             = "5f8c59db-677d-491f-a6b8-5f174b11ec1d"
+Group.ReadWrite.All        = "62a82d76-70ea-41e2-9197-370581804d09"
+
+# Calendars
+Calendars.Read             = "798ee544-9d2d-430c-a058-570e29e34338"
+Calendars.ReadWrite        = "ef54d2bf-783f-4e0f-bca1-3210c0444d99"
+
+# Contacts
+Contacts.Read              = "ff912865-b3be-4bc8-8dcd-52dd87adb585"
+Contacts.ReadWrite         = "204e0828-b5ca-4ad8-b9f3-f32a958e7cc4"
+
+# Teams
+Team.ReadBasic.All         = "2280dda6-0bfd-44ee-a2f4-cb867cfc4c1e"
+Channel.ReadBasic.All      = "2eadaff8-0bce-4198-a6b9-2cfc35a30075"
+Chat.Read                  = "f501c180-9344-439a-bca0-6cbf209fd270"
+Chat.ReadWrite             = "41fb25f6-7eb4-4d0b-b441-2251d70f73db"
+
+# Audit / Security
+AuditLog.Read.All          = "b0afded3-3588-46d8-8b3d-9842eff778da"
+SecurityEvents.Read.All    = "bf394140-e372-4bf9-a898-299cfc7564e5"
+
+# OAuth / OIDC
+offline_access             = "7427e04f-ef13-47b3-a8f0-3188d0bfb8c8"
+openid                     = "37f7f235-527c-4136-accd-4a02d197296e"
+profile                    = "14dad69e-099b-42c9-810b-d002981feec1"
+email                      = "64a6cdd6-aab1-4aaf-94b8-3cc8405e90d0"
