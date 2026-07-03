@@ -8,7 +8,6 @@
 # (AzureRedOps) $ python3 AzureRedOps.py
 # (AzureRedOps) $ pip install -r requirements.txt
 
-
 import os
 import re
 import jwt
@@ -654,8 +653,13 @@ class AzureRedOps:
     def graph_list_principals(self, token, filename):
         self.graph_raw_url(token, "https://graph.microsoft.com/v1.0/servicePrincipals", filename)
 
-    def graph_register_app(self, token, name, url):
-        data = {"displayName": name, "signInAudience": "AzureADMyOrg", "publicClient": {"redirectUris": [url]}, "requiredResourceAccess": [{"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceAccess": [{"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}]}], "isFallbackPublicClient": True}
+    def graph_register_app(self, token, name, url, permissions):
+        resourceAccess = []
+        resourceAccess.append({"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"})
+        for permission in permissions:
+            resourceAccess.append({"id": permission, "type": "Scope"})
+            
+        data = {"displayName": name, "signInAudience": "AzureADMyOrg", "publicClient": {"redirectUris": [url]}, "requiredResourceAccess": [{"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceAccess": resourceAccess}], "isFallbackPublicClient": True}
         headers = {}
         self.set_authorization_header(headers, token)
         response = self.http_request(f"https://graph.microsoft.com/v1.0/applications", verb="POST", headers=headers, data=data, send_json=True)
@@ -805,7 +809,6 @@ class AzureRedOps:
                                     for client in client_url.get("redirectUris"):
                                         print(f"{self.w("Success")}Url Redirection set to {client}.")
 
-
 def main():
     parser = argparse.ArgumentParser(description=f"Azure RedOps v{VERSION} - A Swiss Army tool for Azure red teaming.")
     parser.add_argument("-a", "--activity", required=True, default="id", help="save, list-token, view, delete, id, phish-start, phish-capture, auth, auth-app, auth-interactive, refresh, self, email, list-users, list-applications, list-principals, register-app, add-group, new-group, push-file, permission, spray, spray-refresh, spray-custom, gather-all, raw-url, invite, magic-app, list-interest, interest, knownids")
@@ -840,6 +843,7 @@ def main():
     parser.add_argument("-url", "--url", required=False, help="Send request to a user specified URL. For interactive login it support multiple URL in a comma separated list: https://url.com,https://url2.com")
     parser.add_argument("-beta", "--beta", required=False, action="store_true", default=False, help="Use the beta API")
     parser.add_argument("-exp", "--expand", required=False, action="store_true", default=False, help="Format output list and dict by expanding them to human readable format")
+    parser.add_argument("-pe", "--permissions", required=False, help="Comma separated list of permission GUID")
     parser.add_argument("-k", "--keep", required=False, action="store_true", default=False, help="Keep session.har file")
     parser.add_argument("-d", "--debug", required=False, action="store_true", default=False, help="Show debugging information")
     parser.add_argument("-dd", "--verbose-debug", required=False, action="store_true", default=False, help="Show http request debugging  information")
@@ -1040,12 +1044,13 @@ def main():
         name = app.is_args_set(args, "name")
         url = app.is_args_set(args, "url")
         token = app.is_args_set(args, "load_access_token", False)
+        permissions = app.is_args_set(args, "permissions", False).split(",")
         if not token == None:
             token = app.get_azure_token_from_file(token, "access_token")
         else:
             token = app.is_args_set(args, "access_token")
 
-        app.graph_register_app(token, name, url)
+        app.graph_register_app(token, name, url, permissions)
 
     elif args.activity == "add-group":
         uid = app.is_args_set(args, "uid")
@@ -1154,7 +1159,6 @@ def main():
 
     else:
         print(f"{app.w("Error")}Invalid activity provided.")
-
 
 if __name__ == "__main__":
     main()
