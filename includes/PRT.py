@@ -107,7 +107,7 @@ class PRTManager:
             + "\n  ".join(errors)
         )
 
-    def register_device(self, drs_access_token, device_name="AzureRedOps", tenant="common", join_type=0):
+    def register_device(self, drs_access_token, device_name="", tenant="common", join_type=0):
         c = _require_crypto()
         rsa, hashes, x509, NameOID, serialization = (
             c["rsa"], c["hashes"], c["x509"], c["NameOID"], c["serialization"])
