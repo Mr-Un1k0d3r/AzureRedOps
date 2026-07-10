@@ -29,8 +29,10 @@ Learn more about the tool [on CYPFER blog](https://offsec.cypfer.com/blog/AzureR
   - **ROPC** (`auth`) — direct username/password authentication.
   - **Device-code phishing** (`phish-start` / `phish-capture`) — abuse the OAuth device authorization grant to capture tokens issued when a target enters your user code at `microsoft.com/devicelogin`. Auto-captures by default.
   - **Third-party app consent** (`auth-app`) — full Authorization Code + PKCE flow against a custom application registration, served by a built-in local HTTPS listener that receives the redirect.
-  - **Interactive browser capture** (`auth-interactive`) — drive a real Chromium browser with Playwright (handles MFA / Conditional Access / SSO), then harvest every token from the recorded session HAR.
+  - **Interactive browser capture** (`auth-interactive`) — drive a real browser (Playwright; Firefox by default, `-br` to switch) (handles MFA / Conditional Access / SSO), then harvest every token from the recorded session HAR.
   - **Refresh-token exchange** (`refresh`) — trade a refresh token for fresh access tokens.
+  - **On-Behalf-Of grant** (`obo`) — exchange an already-issued access token for a new token scoped to a downstream resource (OAuth 2.0 `jwt-bearer` / OBO).
+  - **Token-to-browser SSO** (`browser-sso`) — open a real browser **already authenticated as the user** straight into the target web app (Outlook on the web, Teams, SharePoint, the Azure portal, ...). With `-aprt/--auto-prt` it auto-mints a **Primary Refresh Token (PRT)** cookie from a refresh token (device registration → PRT → `x-ms-RefreshTokenCredential`), so a fresh browser completes single sign-on with no manual login.
 - **Directory enumeration** via Microsoft Graph — users, applications, service principals, authorization policies, and a bulk `gather-all` collector.
 - **Password spraying** against known Microsoft first-party app IDs (`spray`) and cross-app refresh-token spraying (`spray-refresh`).
 - **Post-exploitation** — register applications, create groups, assign directory roles, invite external (guest) users, and upload files to OneDrive.
@@ -46,7 +48,10 @@ Learn more about the tool [on CYPFER blog](https://offsec.cypfer.com/blog/AzureR
   - `PyJWT`
   - `requests`
   - `playwright`
-- A browser runtime for Playwright (only needed for the `auth-interactive` activity).
+  - `cryptography` (only needed for `browser-sso -aprt`, the auto-PRT flow)
+- A Playwright browser runtime for the browser flows (`auth-interactive`, `browser-sso`).
+  Firefox is the default engine (`-br/--browser`); install it with
+  `python -m playwright install firefox`.
 - TLS certificate + key at `includes/web/cert.pem` and `includes/web/key.pem`
   (only needed for the `auth-app` PKCE flow — see [Notes](#notes--tips)).
 
@@ -67,8 +72,11 @@ source AzureRedOps/bin/activate          # Linux / macOS
 # Install dependencies
 pip install -r requirements.txt
 
-# Install the browser used by auth-interactive (one-time)
-python -m playwright install chromium
+# Install the browser used by the browser flows (one-time).
+# Firefox is the default engine; install the one(s) you plan to use with -br.
+python -m playwright install firefox
+# python -m playwright install chromium webkit   # optional, for -br chromium/webkit
+# python -m playwright install-deps              # Linux/WSL: pull system libs
 ```
 
 Run the tool:
@@ -177,7 +185,11 @@ per Graph endpoint (e.g. `users-<name>`, `groups-<name>`, ...).
 | `-url` | `--url` | | Target URL for `raw-url`/`invite`; comma-separated list of URLs for `auth-interactive`. |
 | `-beta` | `--beta` | `False` | Use the Microsoft Graph **beta** endpoint for `list-users`/`list-applications`. |
 | `-exp` | `--expand` | `False` | Expand nested lists/dicts in output to a human-readable format. |
-| `-k` | `--keep` | `False` | Keep the `session.har` file after `auth-interactive`. |
+| `-k` | `--keep` | `False` | Keep the `session.har` file after `auth-interactive` / `browser-sso`. |
+| `-cs` | `--client-secret` | | Confidential client secret used by the `obo` On-Behalf-Of grant. |
+| `-prt` | `--prt-cookie` | | PRT cookie value (`x-ms-RefreshTokenCredential`) to seed browser SSO for `browser-sso`. |
+| `-br` | `--browser` | `firefox` | Playwright browser engine for the browser flows (`auth-interactive`, `browser-sso`). One of `firefox`, `chromium`, `webkit`. |
+| `-aprt` | `--auto-prt` | `False` | For `browser-sso`: auto-mint a PRT cookie from the refresh token (device registration → PRT → `x-ms-RefreshTokenCredential`) so the browser opens **already authenticated**. Needs `cryptography` and a FOCI/broker refresh token. |
 | `-d` | `--debug` | `False` | Enable debug logging. |
 | `-dd` | `--verbose-debug` | `False` | Enable verbose HTTP request/response logging. |
 | `-re` | `--redirect-to-file` | `False` | Mirror all console output to `output.txt`. |
@@ -219,6 +231,8 @@ python3 AzureRedOps.py -a delete -n mytoken
 | `auth-app` | `-tid` | `-s`, `-n` | Authorization-Code + PKCE flow via a local HTTPS listener. |
 | `auth-interactive` | — | `-url`, `-k`, `-n` | Spawn a browser (Playwright), let the user log in, and harvest tokens from the session HAR. Always auto-saves. |
 | `refresh` | `-v`, `-app`, and (`-l`) **or** (`-r` + `-tid`) | `-s`, `-n` | Exchange a refresh token for a fresh access token. |
+| `obo` | `-tid`, `-app`, and (`-ac`) **or** (`-l`) | `-cs`, `-au`, `-sc`, `-s`, `-n` | On-Behalf-Of: exchange an issued access token for a token scoped to another resource. |
+| `browser-sso` | `-app`, and (`-l`) **or** (`-r` + `-tid`) | `-aprt`, `-url`, `-prt`, `-v`, `-k`, `-s`, `-n` | Open a browser already authenticated as the user. Add `-aprt` to auto-mint a PRT cookie from the refresh token, seed a ready one with `-prt`, or fall back to converting the token + manual login. |
 
 ```bash
 # Resolve a tenant ID from a domain
@@ -238,6 +252,12 @@ python3 AzureRedOps.py -a auth-interactive -url https://portal.azure.com -s -n h
 
 # Refresh a saved token
 python3 AzureRedOps.py -a refresh -l mytoken -app d3590ed6-52b3-4102-aeff-aad2292ab01c
+
+# On-Behalf-Of: exchange an issued token for a Graph-scoped token
+python3 AzureRedOps.py -a obo -l mytoken -tid <tenant-guid> -app <client-guid> -cs <client-secret> -au https://graph.microsoft.com
+
+# Convert an issued token into an Outlook-on-the-web session and open it in a browser
+python3 AzureRedOps.py -a browser-sso -l mytoken -url outlook -prt <x-ms-RefreshTokenCredential-value>
 ```
 
 #### How the authentication flows work
@@ -296,7 +316,8 @@ python3 AzureRedOps.py -a auth-app -tid <tenant-guid> -s -n consented
 
 ##### Interactive browser authentication (`auth-interactive`)
 
-`auth-interactive` launches a **real Chromium browser via Playwright** and lets the
+`auth-interactive` launches a **real browser via Playwright** (Firefox by default; choose
+the engine with `-br/--browser`) and lets the
 operator (or a target on a shared session) complete an interactive login — including
 MFA, Conditional Access, and federated/SSO redirects that scripted flows cannot
 satisfy. The entire browser session is recorded to a HAR file (`session.har`); the tool
@@ -316,6 +337,104 @@ save.
 ```bash
 # Log in interactively and harvest tokens for two resources
 python3 AzureRedOps.py -a auth-interactive -url https://portal.azure.com,https://outlook.office.com -k
+```
+
+##### On-Behalf-Of token exchange (`obo`)
+
+`obo` implements the OAuth 2.0 **On-Behalf-Of** flow (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`).
+It takes an **already-issued access token** as the assertion and exchanges it for a
+brand-new token scoped to a different downstream resource — without re-authenticating
+the user.
+
+- The assertion token is supplied with `-ac/--access-token` or a cached token via
+  `-l/--load-access-token`.
+- `-app/--appid` + `-cs/--client-secret` identify the **confidential client** performing
+  the exchange. Entra ID requires that this client be the **audience (`aud`)** of the
+  assertion token; a mismatch fails with `AADSTS500131`/`AADSTS50013`.
+- The target resource is set with `-au/--audience` (default `https://graph.microsoft.com`,
+  turned into `<audience>/.default`) or a full scope with `-sc/--scope`.
+- The resulting token (and refresh token, when returned) is printed and honours `-s/-n`.
+
+```bash
+# Exchange an issued token for a Microsoft Graph token on behalf of the user
+python3 AzureRedOps.py -a obo -l mytoken -tid <tenant-guid> \
+  -app <client-guid> -cs <client-secret> -au https://graph.microsoft.com -s -n obo-graph
+```
+
+##### Token-to-browser single sign-on (`browser-sso`)
+
+`browser-sso` opens a **real browser that is already authenticated as the user** — you
+click nothing and land straight inside, for example, **Outlook on the web**. This is the
+"just open the browser and get a valid session" flow. The browser gets its session one of
+three ways, in order of preference:
+
+**1. `-aprt/--auto-prt` — auto-mint a PRT cookie (recommended).**
+The refresh token is turned into a **Primary Refresh Token (PRT)** and its browser cookie
+entirely by the tool, then seeded so Entra's ESTS completes SSO with no manual login. The
+chain (in `includes/PRT.py`, the ROADtoken / roadtx / AADInternals protocol) is:
+
+1. Redeem the refresh token for a **device-registration (DRS)** token.
+2. **Register a device** with Azure AD → device certificate + transport key.
+3. Request a **PRT + session key** with the refresh token, signed by the device cert.
+4. **Derive the `x-ms-RefreshTokenCredential` cookie** (KDFv2: SP800-108 KDF over `SHA256(ctx‖decoded-payload-bytes)` → HS256-signed JWT; KDFv1 → `AADSTS5000611`, wrong-bytes → `AADSTS50058`)
+   and seed it into a fresh browser context.
+
+The cookie is seeded with `SameSite=None` and consumed via a **top-level ESTS `/authorize`
+warm-up** (the Office `landingv2` client) so the `ESTSAUTH` session cookie is minted
+first-party — after which the target app opens already signed in. The cookie is derived with
+a fresh nonce right before navigating and retried once; if SSO still can't complete the tool
+probes `prompt=none` and prints the exact `AADSTS` reason (e.g. Conditional Access requiring
+a compliant/managed device, or MFA — neither is bypassable with a freshly registered device).
+
+The PRT, session key and cookie are printed (with a ready-to-paste `-prt "<value>"` hint)
+so you can reuse them later without re-running the chain.
+
+> **Requirements & opsec for `-aprt`:**
+> - Needs the **`cryptography`** package (`pip install cryptography`; it is in
+>   `requirements.txt`).
+> - The refresh token must belong to a **FOCI / broker client** — e.g. one captured by
+>   **device-code phishing the Microsoft Authentication Broker**
+>   (`29d9ed98-a469-4536-ade2-f981bc1d605e`), which is exactly what the SharePoint/OneDrive
+>   device-code lure yields. The default `-app` (Microsoft Office FOCI client) also works.
+> - **Device registration writes a device object into the tenant** — it is not silent and
+>   leaves an artifact (and requires the user be permitted to join/register devices).
+
+**2. `-prt/--prt-cookie` — seed a PRT cookie you already have.**
+If you already hold an `x-ms-RefreshTokenCredential` value (from a previous `-aprt` run, or
+from a compromised host via `ROADtoken`/`browsercore` or `Mimikatz`), pass it directly and
+skip the minting chain.
+
+**3. Neither — convert the token and log in manually (fallback).**
+With no PRT cookie, the refresh token is redeemed for a resource-scoped access/refresh
+token (printed and saved with `-s/-n`), and the browser is opened at the target for you to
+finish the login by hand.
+
+**PRT / session-cookie harvesting.** When the browser session ends (auto-close timeout or
+you close the window), `browser-sso` reads the live browser context and **prints every
+reusable SSO cookie that was issued** — the PRT cookie (`x-ms-RefreshTokenCredential`) and
+the ESTS session cookies (`ESTSAUTH`, `ESTSAUTHPERSISTENT`, ...) — each with a ready-to-paste
+`-prt` hint so you can replay them next time. Cookies are polled while the session is live,
+so the value is captured even if you close the window early. The same harvesting runs at the
+end of `auth-interactive`.
+
+- `-url/--url` selects the target. Use a friendly preset — `outlook`, `office`, `teams`,
+  `sharepoint`, `onedrive`, `portal`, `graph` — or pass one or more raw `https://` URLs
+  (comma-separated). Defaults to `outlook`.
+- `-r/--refresh-token` + `-tid` (or a cached `-l`) provides the refresh token.
+  `-app/--appid` defaults to the Microsoft Office FOCI client.
+- `-br/--browser` picks the Playwright engine (Firefox by default).
+- `-k/--keep` preserves the `session.har` recording of the browser session.
+
+```bash
+# BEST: auto-mint a PRT from a device-code-phished (broker) token and drop straight
+# into an authenticated Outlook on the web — no manual login.
+python3 AzureRedOps.py -a browser-sso -l phished -url outlook -aprt
+
+# Seed a PRT cookie you already have
+python3 AzureRedOps.py -a browser-sso -l mytoken -url outlook -prt <x-ms-RefreshTokenCredential>
+
+# Target Teams from a raw refresh token, auto-mint the PRT, keep the session recording
+python3 AzureRedOps.py -a browser-sso -r 0.AReAB... -tid <tenant-guid> -url teams -aprt -k
 ```
 
 ### Microsoft Graph Operations
@@ -404,7 +523,7 @@ python3 AzureRedOps.py -a interest -i          # IDs only
 |------|-----------|-------------|
 | `.azure_creds` | Token-saving activities | Local JSON cache of access/refresh tokens, keyed by name. |
 | `output.txt` | `-re` flag | Timestamped mirror of all console output. |
-| `session.har` | `auth-interactive` | Browser session recording (deleted unless `-k` is set). |
+| `session.har` | `auth-interactive` / `browser-sso` | Browser session recording (deleted unless `-k` is set). |
 | `<name>.json` | `-j` flag / `gather-all` | Saved API responses. |
 
 ### Bundled data files
@@ -414,6 +533,7 @@ python3 AzureRedOps.py -a interest -i          # IDs only
 | `includes/auth_apps.json` | Target application IDs used for spraying and the `interest` lists. |
 | `includes/apps.json` | Known Microsoft app IDs and metadata for `knownids`. |
 | `includes/Webserver.py` | Local HTTPS listener implementing the PKCE redirect for `auth-app`. |
+| `includes/PRT.py` | PRT-minting chain (device registration → PRT → `x-ms-RefreshTokenCredential` cookie) used by `browser-sso -aprt`. |
 | `includes/web/cert.pem`, `includes/web/key.pem` | TLS material for the local listener. |
 
 ---
@@ -437,6 +557,29 @@ python3 AzureRedOps.py -a interest -i          # IDs only
   ```
 - **Debugging:** `-d` prints high-level debug info; `-dd` dumps full HTTP requests and
   responses (headers + bodies) — useful when diagnosing failed token exchanges.
+- **Browser engine (`-br/--browser`).** The browser flows (`auth-interactive`,
+  `browser-sso`) run a *headed* Playwright browser. The engine defaults to **`firefox`**
+  (the most reliable headed engine under WSLg); switch with `-br chromium` or `-br webkit`.
+  Install the engine you pick once with `python -m playwright install <engine>`.
+- **Playwright on WSL — blank window / whole machine freezes.** Under WSL/WSLg a *headed*
+  browser can open **empty and never paint while the entire host locks up**. Root cause:
+  WSLg exposes a *virtualized* GPU (`/dev/dxg`, driven by the d3d12 Mesa driver) that the
+  browser's GPU/compositor process tries to use, while the WSL VM's default `/dev/shm` is
+  tiny (often 64 MB). The two combine — the GPU process spins on a device it can't drive
+  and the shared-memory compositor exhausts `/dev/shm` — so nothing renders and the VM
+  balloons until the Windows host thrashes. A secondary contributor was
+  `page.goto(..., wait_until="networkidle")`: the Microsoft login page long-polls, so
+  `networkidle` never fires and the navigation blocks on a blank page until timeout.
+  - **Fixed in-tool:** AzureRedOps now auto-detects WSL and disables hardware acceleration
+    for whichever engine you use — Chromium gets `--no-sandbox --disable-gpu
+    --disable-dev-shm-usage`, Firefox gets `gfx.webrender.force-disabled` /
+    `layers.acceleration.disabled` — falling back to CPU (software) rendering so the page
+    still renders and is fully interactive. Every navigation now waits for
+    `domcontentloaded` instead of `networkidle`. You should just see a working browser.
+  - If you still hit issues, raise `/dev/shm` (`sudo mount -o remount,size=1g /dev/shm`),
+    make sure you are on **WSL 2 with WSLg** (`wsl --update`; `echo $DISPLAY` should be
+    non-empty), and confirm the browser runtime is installed in the venv
+    (`python -m playwright install firefox` and `python -m playwright install-deps`).
 
 ---
 

