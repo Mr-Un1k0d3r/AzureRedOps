@@ -1401,7 +1401,8 @@ def main():
         name = app.is_args_set(args, "name")
         url = app.is_args_set(args, "url")
         token = app.is_args_set(args, "load_access_token", False)
-        permissions = app.is_args_set(args, "permissions", False).split(",")
+        permissions = app.is_args_set(args, "permissions", False)
+        permissions = permissions.split(",") if permissions else []
         if not token == None:
             token = app.get_azure_token_from_file(token, "access_token")
         else:
