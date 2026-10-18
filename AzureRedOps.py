@@ -3,9 +3,9 @@
 # Usage: $0.py --help
 
 # Usage: if venv not created:
-#   python3 -m venv AzureRedOps
+#   python3.13 -m venv AzureRedOps
 # source AzureRedOps/bin/activate
-# (AzureRedOps) $ python3 AzureRedOps.py
+# (AzureRedOps) $ python3.13 AzureRedOps.py
 # (AzureRedOps) $ pip install -r requirements.txt
 
 import os
@@ -971,6 +971,117 @@ class AzureRedOps:
     def graph_list_principals(self, token, filename):
         self.graph_raw_url(token, "https://graph.microsoft.com/v1.0/servicePrincipals", filename)
 
+    def graph_list_app_permissions(self, token, filename, filter_app=None):
+        headers = {}
+        self.set_authorization_header(headers, token)
+
+        sp_lookup = {}
+        url = "https://graph.microsoft.com/v1.0/servicePrincipals?$select=id,displayName,appId,appRoles&$top=999"
+        if self.use_beta:
+            url = "https://graph.microsoft.com/beta/servicePrincipals?$select=id,displayName,appId,appRoles&$top=999"
+        print(f"{self.w('Action')}Fetching service principals...")
+        while url:
+            response = self.http_request(url, verb="GET", headers=headers)
+            if "error" in response:
+                print(f"{self.w('Error')}{response['error']}")
+                return
+            for sp in response.get("value", []):
+                sp_lookup[sp["id"]] = sp
+            url = response.get("@odata.nextLink")
+        print(f"{self.w('Action')}Loaded {len(sp_lookup)} service principals.")
+
+        grants = []
+        url = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?$top=999"
+        print(f"{self.w('Action')}Fetching delegated permission grants...")
+        while url:
+            response = self.http_request(url, verb="GET", headers=headers)
+            if "error" in response:
+                print(f"{self.w('Error')}{response['error']}")
+                return
+            grants.extend(response.get("value", []))
+            url = response.get("@odata.nextLink")
+        print(f"{self.w('Action')}Loaded {len(grants)} delegated permission grants.")
+
+        app_perms = {}
+        for grant in grants:
+            client_id = grant.get("clientId")
+            sp = sp_lookup.get(client_id, {})
+            display_name = sp.get("displayName", "Unknown")
+            app_id = sp.get("appId", client_id)
+
+            if filter_app:
+                if filter_app.lower() not in display_name.lower() and filter_app.lower() != app_id.lower():
+                    continue
+
+            if client_id not in app_perms:
+                app_perms[client_id] = {"displayName": display_name, "appId": app_id, "delegated": [], "application": []}
+
+            resource_id = grant.get("resourceId")
+            resource_sp = sp_lookup.get(resource_id, {})
+            resource_name = resource_sp.get("displayName", resource_id)
+            scopes = grant.get("scope", "").strip()
+            consent_type = grant.get("consentType", "")
+
+            for scope in scopes.split(" "):
+                scope = scope.strip()
+                if scope:
+                    app_perms[client_id]["delegated"].append(f"{scope} [{resource_name}] ({consent_type})")
+
+        target_ids = []
+        for sp_id, sp in sp_lookup.items():
+            if filter_app:
+                if filter_app.lower() not in sp.get("displayName", "").lower() and filter_app.lower() != sp.get("appId", "").lower():
+                    continue
+            target_ids.append(sp_id)
+
+        print(f"{self.w('Action')}Fetching application role assignments for {len(target_ids)} service principal(s)...")
+        for sp_id in target_ids:
+            sp = sp_lookup.get(sp_id, {})
+            url = f"https://graph.microsoft.com/v1.0/servicePrincipals/{sp_id}/appRoleAssignments"
+            response = self.http_request(url, verb="GET", headers=headers)
+            if "error" in response:
+                continue
+
+            assignments = response.get("value", [])
+            if not assignments:
+                continue
+
+            if sp_id not in app_perms:
+                app_perms[sp_id] = {"displayName": sp.get("displayName", "Unknown"), "appId": sp.get("appId", sp_id), "delegated": [], "application": []}
+
+            for assignment in assignments:
+                resource_id = assignment.get("resourceId")
+                resource_sp = sp_lookup.get(resource_id, {})
+                role_id = assignment.get("appRoleId")
+                role_name = role_id
+                for role in resource_sp.get("appRoles", []):
+                    if role.get("id") == role_id:
+                        role_name = role.get("value", role_id)
+                        break
+                resource_name = resource_sp.get("displayName", resource_id)
+                app_perms[sp_id]["application"].append(f"{role_name} [{resource_name}]")
+
+        if filename:
+            self.save_to_file(filename, list(app_perms.values()))
+        else:
+            if not app_perms:
+                print(f"{self.w('Action')}No application permissions found.")
+                return
+            for sp_id, perms in app_perms.items():
+                print()
+                print(f"{self.w('Application')}{perms['displayName']}")
+                print(f"{self.w('AppId')}{perms['appId']}")
+                if perms["delegated"]:
+                    print(f"{self.w('Delegated')}")
+                    for perm in perms["delegated"]:
+                        print(f"{self.w('', 8, '-')}{perm}")
+                if perms["application"]:
+                    print(f"{self.w('App Roles')}")
+                    for perm in perms["application"]:
+                        print(f"{self.w('', 8, '-')}{perm}")
+                if not perms["delegated"] and not perms["application"]:
+                    print(f"{self.w('Permissions')}None found")
+
     def graph_register_app(self, token, name, url, permissions):
         resourceAccess = []
         resourceAccess.append({"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"})
@@ -1129,7 +1240,7 @@ class AzureRedOps:
 
 def main():
     parser = argparse.ArgumentParser(description=f"Azure RedOps v{VERSION} - A Swiss Army tool for Azure red teaming.")
-    parser.add_argument("-a", "--activity", required=True, default="id", help="save, list-token, view, delete, id, phish-start, phish-capture, auth, auth-app, auth-interactive, refresh, obo, browser-sso, self, email, list-users, list-applications, list-principals, register-app, add-group, new-group, push-file, permission, spray, spray-refresh, gather-all, raw-url, invite, magic-app, list-interest, interest, knownids")
+    parser.add_argument("-a", "--activity", required=True, default="id", help="save, list-token, view, delete, id, phish-start, phish-capture, auth, auth-app, auth-interactive, refresh, obo, browser-sso, self, email, list-users, list-applications, list-principals, list-app-permissions, register-app, add-group, new-group, push-file, permission, spray, spray-refresh, gather-all, raw-url, invite, magic-app, list-interest, interest, knownids")
     parser.add_argument("-ac", "--access-token", required=False, help="Azure access token")
     parser.add_argument("-n", "--name", required=False, help="Azure access token name")
     parser.add_argument("-t", "--tenant", required=False, help="Azure tenant domain name")
@@ -1396,6 +1507,19 @@ def main():
             token = app.is_args_set(args, "access_token")
 
         app.graph_list_principals(token, filename)
+
+    elif args.activity == "list-app-permissions":
+        app.print_hint(["Requires Application.Read.All or Directory.Read.All permission on the token",
+                         "Extend the token to Microsoft Graph using Microsoft Azure CLI (04b07795-8ddb-461a-bbee-02f9e1bf7b46)"])
+        filename = app.is_args_set(args, "json", False)
+        token = app.is_args_set(args, "load_access_token", False)
+        if not token == None:
+            token = app.get_azure_token_from_file(token, "access_token")
+        else:
+            token = app.is_args_set(args, "access_token")
+
+        filter_app = app.is_args_set(args, "filter", False)
+        app.graph_list_app_permissions(token, filename, filter_app)
 
     elif args.activity == "register-app":
         name = app.is_args_set(args, "name")
